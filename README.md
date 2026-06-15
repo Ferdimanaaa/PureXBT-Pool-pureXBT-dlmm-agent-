@@ -19,6 +19,8 @@ Since the initial release, PureXBT has been significantly upgraded:
 - **Position History Table** — full position history with PnL $, PnL %, fees, hold duration, peak PnL, status (OPEN/CLOSED/EXT CLOSED), and close reason. Filterable per wallet with pagination.
 - **On-Chain Reconciliation** — positions closed manually via Meteora UI are automatically detected as `externally_closed`. PnL is estimated from pool-memory snapshots.
 - **Feedback Injection** — pattern-aware decision summary (win rate, cumulative PnL, loss patterns) injected into the SCREENER system prompt.
+- **Fee Split Auto-Swap (USDC/SOL)** — claimed fees are split into two swaps: a configurable share goes to **USDC** (parked realized profit, never redeployed) and the rest to **SOL** (compounded into the next position). Controlled by `management.feeSplitUsdcPct` (default `40`, clamp `0–100`; set `0` for legacy 100%-SOL behavior). Each swap runs in its own try/catch; a dust portion below threshold is redirected to SOL to avoid quote errors.
+- **RPC-Derived PnL** (`tools/pnl.js`) — on-chain PnL computed directly via `DLMM.getAllLbPairPositionsByUser` (public RPC) with Jupiter prices and Meteora cost-basis. `PnL = balances + withdraw + claimable + claimed − deposits`. No circular dependencies; falls back to the Meteora PnL API on error.
 
 ### Optimizations
 - **Context Compression** — raw JSON replaced with structured 1-line summaries in prompts. ~50-70% fewer tokens per ReAct step.
@@ -200,6 +202,7 @@ All fields optional — defaults shown. Edit `user-config.json`. Full per-wallet
 |---|---|---|
 | `stopLossPct` | `-15` | Close position if PnL drops below this % |
 | `takeProfitPct` | `8` | Take profit target % |
+| `feeSplitUsdcPct` | `40` | % of claimed fees swapped to USDC (parked); rest to SOL (compounded). `0` = legacy 100% SOL |
 | `trailingTakeProfit` | `true` | Enable trailing take-profit |
 | `trailingTriggerPct` | `4` | Trail trigger % above entry |
 | `trailingDropPct` | `2` | Trail drop % from peak |
