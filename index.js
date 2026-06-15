@@ -1076,6 +1076,14 @@ function formatCandidates(candidates) {
 function getDeterministicCloseRule(position, managementConfig) {
   const tracked = getTrackedPosition(position.position);
   const pnlSuspect = (() => {
+    // Honor the upstream-aligned input-validity flag from getMyPositions (dlmm.js).
+    // If the tick couldn't be priced (missing cost basis / collapsed value), the
+    // PnL-based rules must not fire. Keeps this path in agreement with the poller
+    // exit guard in state.js (updatePnlAndCheckExits).
+    if (position.pnl_pct_suspicious) {
+      log("cron_warn", `Suspect PnL for ${position.pair}: flagged pnl_pct_suspicious — skipping PnL rules`);
+      return true;
+    }
     if (position.pnl_pct == null) return false;
     if (position.pnl_pct > -90) return false;
     if (tracked?.amount_sol && (position.total_value_usd ?? 0) > 0.01) {

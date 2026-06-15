@@ -48,6 +48,7 @@
 
   "minClaimAmount": 5,
   "autoSwapAfterClaim": false,
+  "feeSplitUsdcPct": 40,
   "outOfRangeBinsToClose": 10,
   "outOfRangeWaitMinutes": 30,
   "oorCooldownTriggerCount": 3,

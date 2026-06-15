@@ -13,6 +13,7 @@ import BN from "bn.js";
 import bs58 from "bs58";
 import { config, computeDeployAmount, MIN_SAFE_BINS_BELOW } from "../config.js";
 import { log } from "../logger.js";
+import { computePositions } from "./pnl.js";
 import {
   trackPosition,
   markOutOfRange,
@@ -1197,6 +1198,26 @@ export async function getMyPositions({ force = false, silent = false, wallet_add
   }
 
   const loadPositions = async () => { try {
+    // ─── RPC-first PnL path (Sprint B) ───────────────────────────
+    // Compute positions on-chain (tools/pnl.js). On ANY error, fall through
+    // to the legacy Meteora/LPAgent path below — fully reversible safety net.
+    if ((config.pnl?.source ?? "rpc") === "rpc") {
+      try {
+        const rpcResult = await computePositions(walletAddress);
+        if (rpcResult && Array.isArray(rpcResult.positions)) {
+          if (!silent) log("positions", `RPC PnL path: ${rpcResult.positions.length} position(s)`);
+          if (useLocalWallet) {
+            syncOpenPositions(rpcResult.positions.map(p => p.position));
+            _positionsCache = rpcResult;
+            _positionsCacheAt = Date.now();
+          }
+          return rpcResult;
+        }
+      } catch (rpcErr) {
+        log("positions_warn", `RPC PnL path failed (${rpcErr.message}) — falling back to Meteora/LPAgent path`);
+      }
+    }
+
     let relayLpAgentByPosition = null;
     let relayRequestId = null;
     if (shouldUseLpAgentRelay()) {
@@ -1266,9 +1287,31 @@ export async function getMyPositions({ force = false, silent = false, wallet_add
         const pnlPctDiff = reportedPnlPct != null && derivedPnlPct != null
           ? Math.abs(reportedPnlPct - derivedPnlPct)
           : null;
-        const pnlPctSuspicious = pnlPctDiff != null && pnlPctDiff > (config.management.pnlSanityMaxDiffPct ?? 5);
+        // Input-validity sanity (upstream pattern, adapted to PureXBT data sources).
+        // A tick is "suspicious" (don't act on it for STOP_LOSS / TRAILING_TP) ONLY
+        // when PnL couldn't be computed reliably — NOT when the precomputed API pct
+        // and our derived pct merely disagree. That diff is a stale-cache artifact
+        // (Meteora pnlPctChange lags the live snapshot) and was falsely suppressing
+        // exits on fast moves exactly when they matter (see 2026-06-12 Fase 0 log audit:
+        // 6300 false flags incl. real -30%/-53% losers blocked from stop-loss).
+        const depositVal = lpData
+          ? (config.management.solMode ? safeNum(lpData.inputNative) : safeNum(lpData.inputValue))
+          : binData
+            ? (config.management.solMode ? safeNum(binData.allTimeDeposits?.total?.sol) : safeNum(binData.allTimeDeposits?.total?.usd))
+            : 0;
+        const currentVal = lpData
+          ? (config.management.solMode ? safeNum(lpData.valueNative) : safeNum(lpData.value))
+          : binData
+            ? (config.management.solMode ? safeNum(binData.unrealizedPnl?.balancesSol) : safeNum(binData.unrealizedPnl?.balances))
+            : 0;
+        // depositsMissing: no cost basis → pnl_pct is garbage.
+        // valueCollapsed: reports near-total loss while liquidity is still present →
+        //   price/data gap (e.g. token price feed missing), not a real -100%.
+        const depositsMissing = (lpData || binData) ? depositVal <= 0 : false;
+        const valueCollapsed = reportedPnlPct != null && reportedPnlPct <= -90 && currentVal > 0.01;
+        const pnlPctSuspicious = depositsMissing || valueCollapsed;
         if (pnlPctSuspicious) {
-          log("positions_warn", `Suspicious pnl_pct for ${positionAddress.slice(0, 8)}: reported=${reportedPnlPct.toFixed(2)} derived=${derivedPnlPct.toFixed(2)} diff=${pnlPctDiff.toFixed(2)}`);
+          log("positions_warn", `Suspicious pnl_pct for ${positionAddress.slice(0, 8)}: depositsMissing=${depositsMissing} valueCollapsed=${valueCollapsed} (deposit=${depositVal}, value=${currentVal}, reported=${reportedPnlPct}, diff=${pnlPctDiff})`);
         }
 
         positions.push({

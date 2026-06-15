@@ -839,6 +839,10 @@ async function handleHistory(req, res) {
         } else if ((dPnl !== 0 || dFees !== 0) && (ePnl !== 0 || eFees !== 0)) {
           // Both have data — keep the one with higher absolute pnl (more reliable close)
           if (Math.abs(dPnl) > Math.abs(ePnl)) closeMap[key] = d;
+          // Tie on PnL (duplicate close events have identical pnl_usd): keep the one
+          // that actually carries fees. Otherwise the fees=0 sibling wins and the
+          // Fees column renders $0. (Fixed 2026-06-12)
+          else if (Math.abs(dPnl) === Math.abs(ePnl) && dFees > eFees) closeMap[key] = d;
         }
       }
     }

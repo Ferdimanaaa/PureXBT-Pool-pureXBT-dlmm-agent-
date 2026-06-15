@@ -8,20 +8,7 @@ PureXBT runs continuous screening and management cycles, deploying capital into 
 
 ---
 
-## What's New (v3.1)
-
-> **2026-06-06** — Config tuning, swap referral cleanup, GMGN integration hardening.
-
-### v3.1 Changes
-- **Configurable Entry Size** — `deployAmountSol` (floor), `maxDeployAmount` (ceiling), `positionSizePct` (wallet %). Formula: `clamp(wallet × pct, floor, ceil)`. Scales position size with wallet growth.
-- **Jupiter Swap V2** — auto-swap token → SOL on position close and fee claim. Uses Jupiter Ultra API. Referral is optional — set `jupiter.referralAccount` and `referralFeeBps` in config, or leave empty to skip.
-- **GMGN Integration** — trending discovery, pump detection, security/rug checks, smart money enrichment. API key via `GMGN_API_KEY` env var (not hardcoded).
-- **Discord Signal Tools** — `fetch_discord`, `read_discord_channel`, `get_discord_signals`, `get_author_stats` for Discord-based pool discovery.
-- **Smart Wallets** — KOL/alpha wallet tracking with pool cross-reference. Dashboard UI for adding/managing tracked wallets.
-- **OOR Loss Prevention** — 3-layer system: scoring penalties, adaptive bin thresholds, fast OOR exit based on fee/TVL and organic score.
-- **Fee Auto-Compound** — auto-swap claimed fees to SOL for natural compounding.
-
-### v2 Features
+## What's New (v2)
 
 Since the initial release, PureXBT has been significantly upgraded:
 
@@ -283,9 +270,8 @@ tools/
   executor.js       Tool dispatch + safety checks
   dlmm.js           Meteora DLMM SDK wrapper
   screening.js      Pool discovery + parallel fetch
-  wallet.js         SOL/token balances (Helius) + Jupiter Swap V2
+  wallet.js         SOL/token balances (Helius) + Jupiter swap
   token.js          Token info, holders, narrative
-  gmgn.js           GMGN API — trending discovery, pump detection, security checks
   study.js          Top LPer study via LPAgent API
 ```
 

@@ -9,7 +9,7 @@ import {
   closePosition,
   searchPools,
 } from "./dlmm.js";
-import { getWalletBalances, swapToken } from "./wallet.js";
+import { getWalletBalances, swapToken, deriveAddress } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons, deleteLesson, manageLesson, getAuthorStats } from "../lessons.js";
 import { setPositionInstruction } from "../state.js";
@@ -750,6 +750,8 @@ export async function executeTool(name, args) {
             const SWAP_BLACKLIST = new Set([
               "9XHkrup9a1xvRyMMX7UK3QnpPdbnqQCiZZouHFfiTW8T", // user-flagged
               "7GkZYRecKsmcDM5JoWeYt93v4vBaCZVJPS1ApR1TwA8j", // same "mɔ" symbol family as 9XHk
+              "HLnW6TCUsJuwBbWCX4YfuhrZJ9ZJMQHL4yZPfn7EFx2S", // "mɔ" family — no Jupiter route (Failed to get quotes)
+              "H8VmPPULshXk3Dr9Gw8Uy6b2p6ccvbnhrNEGM8wj6Msh", // "mɔ" family — no Jupiter route
             ]);
             const MIN_SWEEP_USD = 0.20;
             const MIN_SWEEP_BALANCE_NO_PRICE = 1; // for tokens with null/0 usd, require >1 unit
@@ -810,9 +812,14 @@ export async function executeTool(name, args) {
         if (config.management.autoSwapAfterClaim && result.base_mint) {
           try {
             const SOL_MINT = "So11111111111111111111111111111111111111112";
+            const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+            const rawPct = config.management.feeSplitUsdcPct ?? 40;
+            const usdcPct = Math.max(0, Math.min(100, Number(rawPct) || 0));
             const SWAP_BLACKLIST = new Set([
                           "9XHkrup9a1xvRyMMX7UK3QnpPdbnqQCiZZouHFfiTW8T",
                           "7GkZYRecKsmcDM5JoWeYt93v4vBaCZVJPS1ApR1TwA8j",
+                          "HLnW6TCUsJuwBbWCX4YfuhrZJ9ZJMQHL4yZPfn7EFx2S",
+                          "H8VmPPULshXk3Dr9Gw8Uy6b2p6ccvbnhrNEGM8wj6Msh",
                         ]);
             if (SWAP_BLACKLIST.has(result.base_mint)) {
               log("executor_warn", `Auto-compound skipped: base_mint ${result.base_mint} is in swap blacklist`);
@@ -820,14 +827,50 @@ export async function executeTool(name, args) {
               const balances = await getWalletBalances({});
               const token = balances.tokens?.find(t => t.mint === result.base_mint);
               if (token && token.usd >= 0.10) {
-                log("executor", `Auto-compound: swapping claimed ${token.symbol || result.base_mint.slice(0, 8)} ($${token.usd.toFixed(2)}) back to SOL for redeploy`);
-                const swapResult = await swapToken({ input_mint: result.base_mint, output_mint: SOL_MINT, amount: token.balance });
-                if (swapResult?.amount_out) {
-                  // amount_out from Jupiter Swap V2 is in lamports for SOL output - convert for display
-                  const solHuman = Number(swapResult.amount_out) / 1e9;
-                  log("executor", `Auto-compound: received ${solHuman.toFixed(6)} SOL — will be used in next screening cycle`);
-                  result.auto_compounded = true;
-                  result.compound_sol = solHuman;
+                const symbol = token.symbol || result.base_mint.slice(0, 8);
+                const totalAmount = token.balance;
+                let usdcAmount = usdcPct > 0 ? totalAmount * (usdcPct / 100) : 0;
+                // Skip dust-sized USDC swap (Jupiter quote errors); redirect to SOL instead
+                const dustFloor = totalAmount * 0.005;
+                if (usdcAmount > 0 && usdcAmount < dustFloor) {
+                  log("executor_warn", `Auto-compound: USDC split amount too small (${usdcAmount}), redirecting full amount to SOL`);
+                  usdcAmount = 0;
+                }
+                const solAmount = totalAmount - usdcAmount;
+                log("executor", `Auto-compound: splitting claimed ${symbol} ($${token.usd.toFixed(2)}) → ${usdcPct}% USDC (parked) / ${100 - usdcPct}% SOL (redeploy)`);
+
+                // SWAP 1: base token → USDC (parked realized profit, not redeployed)
+                if (usdcAmount > 0) {
+                  try {
+                    const usdcSwap = await swapToken({ input_mint: result.base_mint, output_mint: USDC_MINT, amount: usdcAmount });
+                    if (usdcSwap?.amount_out) {
+                      // USDC output is in 1e6 units
+                      const usdcHuman = Number(usdcSwap.amount_out) / 1e6;
+                      log("executor", `Auto-compound: parked ${usdcHuman.toFixed(2)} USDC`);
+                      result.parked_usdc = usdcHuman;
+                      result.auto_compounded = true;
+                    }
+                  } catch (e) {
+                    log("executor_warn", `Auto-compound USDC swap failed: ${e.message}`);
+                    result.parked_usdc = 0;
+                  }
+                }
+
+                // SWAP 2: base token → SOL (compounded for next screening cycle)
+                if (solAmount > 0) {
+                  try {
+                    const solSwap = await swapToken({ input_mint: result.base_mint, output_mint: SOL_MINT, amount: solAmount });
+                    if (solSwap?.amount_out) {
+                      // SOL output is in lamports (1e9)
+                      const solHuman = Number(solSwap.amount_out) / 1e9;
+                      log("executor", `Auto-compound: received ${solHuman.toFixed(6)} SOL — will be used in next screening cycle`);
+                      result.compound_sol = solHuman;
+                      result.auto_compounded = true;
+                    }
+                  } catch (e) {
+                    log("executor_warn", `Auto-compound SOL swap failed: ${e.message}`);
+                    result.compound_sol = 0;
+                  }
                 }
               }
             }
@@ -1042,6 +1085,8 @@ async function runSafetyChecks(name, args) {
       const SWAP_BLACKLIST = new Set([
                     "9XHkrup9a1xvRyMMX7UK3QnpPdbnqQCiZZouHFfiTW8T",
                     "7GkZYRecKsmcDM5JoWeYt93v4vBaCZVJPS1ApR1TwA8j",
+                    "HLnW6TCUsJuwBbWCX4YfuhrZJ9ZJMQHL4yZPfn7EFx2S",
+                    "H8VmPPULshXk3Dr9Gw8Uy6b2p6ccvbnhrNEGM8wj6Msh",
                   ]);
       if (SWAP_BLACKLIST.has(args.input_mint) || SWAP_BLACKLIST.has(args.output_mint)) {
         return {

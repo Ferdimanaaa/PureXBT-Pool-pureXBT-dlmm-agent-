@@ -214,6 +214,19 @@ export const config = {
     USDT: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
   },
 
+  // ─── PnL fetcher / poller (Sprint B: RPC-derived, LPAgent as fallback) ──
+  pnl: {
+    // source: "rpc" → compute PnL on-chain (tools/pnl.js) first, fall back to
+    //   the Meteora/LPAgent path in getMyPositions on any error.
+    //   "meteora" → skip RPC entirely, use the legacy path only.
+    source: nonEmptyString(u.pnlSource, "rpc"),
+    // Dedicated RPC for the (potentially aggressive) poller so it never burns
+    // the main RPC_URL budget. Public pump.helius by default.
+    rpcUrl: nonEmptyString(u.pnlRpcUrl, process.env.PNL_RPC_URL, "https://pump.helius-rpc.com"),
+    // Deposit history (cost basis) is slow-changing; cache per pool, sig-invalidated.
+    depositCacheTtlSec: Number(u.pnlDepositCacheTtlSec ?? 300),
+  },
+
   // ─── HiveMind ─────────────────────────
   hiveMind: {
     url: nonEmptyString(u.hiveMindUrl, process.env.HIVE_MIND_URL) || null,

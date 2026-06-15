@@ -7,7 +7,7 @@
 import { log } from "../logger.js";
 
 const BASE = "https://openapi.gmgn.ai";
-const API_KEY = process.env.GMGN_API_KEY || "";
+const API_KEY = process.env.GMGN_API_KEY || "gmgn_2aeb1f71da4b0edc80e6e3e4b85158ff";
 
 async function gmgnFetch(path) {
   const url = `${BASE}${path}`;
