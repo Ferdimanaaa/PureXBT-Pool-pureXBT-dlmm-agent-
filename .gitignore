@@ -48,3 +48,6 @@ wallets.json
 # Claude Code runtime lock
 .claude/scheduled_tasks.lock
 chat-history.json
+
+# generated VPS learning artifact — contains VPS connection info, never publish
+learning-local.html
