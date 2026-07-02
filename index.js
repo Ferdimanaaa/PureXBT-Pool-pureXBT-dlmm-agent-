@@ -42,6 +42,12 @@ const isMain = entrypointPath
   ? path.resolve(entrypointPath) === fileURLToPath(import.meta.url)
   : false;
 
+// --- Process role flags (dashboard split) ---
+// DASHBOARD_ONLY=1  -> this process runs ONLY the dashboard HTTP server (no trading loops).
+// AGENT_NO_DASHBOARD=1 -> this (agent) process must NOT host the dashboard.
+const DASHBOARD_ONLY = process.env.DASHBOARD_ONLY === "1" || process.env.DASHBOARD_ONLY === "true";
+const AGENT_NO_DASHBOARD = process.env.AGENT_NO_DASHBOARD === "1" || process.env.AGENT_NO_DASHBOARD === "true";
+
 // Daily stop-loss guard: blocks new deploys if too many losses today
 let _dailyStopCount = 0;
 let _dailyStopDate = "";
@@ -62,10 +68,12 @@ if (isMain) {
   } catch (e) {
     log("hivemind_warn", `startHiveMindBackgroundSync threw: ${e.message}`);
   }
-  try {
-    startDashboard();
-  } catch (e) {
-    log("dashboard_error", `startDashboard threw: ${e.message}`);
+  if (DASHBOARD_ONLY || !AGENT_NO_DASHBOARD) {
+    try {
+      startDashboard();
+    } catch (e) {
+      log("dashboard_error", `startDashboard threw: ${e.message}`);
+    }
   }
 }
 
@@ -253,7 +261,7 @@ export async function runManagementCycle({ silent = false } = {}) {
 
   try {
     if (!silent && telegramEnabled()) {
-      liveMessage = await createLiveMessage("🔄 Management Cycle", "Evaluating positions...");
+      liveMessage = await createLiveMessage("🔄 <b>NGECEK POSISI, BOS</b>", "Lagi dievaluasi posisine...");
     }
     const livePositions = await getMyPositions({ force: true }).catch(() => null);
     positions = livePositions?.positions || [];
@@ -360,7 +368,7 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     const cur = config.management.solMode ? "◎" : "$";
     mgmtReport = reportLines.join("\n\n") +
-      `\n\nSummary: 💼 ${positions.length} positions | ${cur}${totalValue.toFixed(4)} | fees: ${cur}${totalUnclaimed.toFixed(4)} | ${actionSummary}`;
+      `\n\n💼 <b>Ringkesan, Bos:</b> ${positions.length} posisi | ${cur}${totalValue.toFixed(4)} | fee: ${cur}${totalUnclaimed.toFixed(4)} | ${actionSummary}`;
 
     // ── Call LLM only if action needed ──────────────────────────────
     const actionPositions = positionData.filter(p => {
@@ -423,7 +431,7 @@ After executing, write a brief one-line result per position.
     if (!silent && telegramEnabled()) {
       if (mgmtReport) {
         if (liveMessage) await liveMessage.finalize(stripThink(mgmtReport)).catch(() => {});
-        else sendMessage(`🔄 Management Cycle\n\n${stripThink(mgmtReport)}`).catch(() => { });
+        else sendMessage(`🔄 <b>LAPORAN POSISI, BOS</b>\n\n${stripThink(mgmtReport)}`).catch(() => { });
       }
       for (const p of positions) {
         const trackedPos = getTrackedPosition(p.position);
@@ -438,12 +446,29 @@ After executing, write a brief one-line result per position.
 }
 
 export async function runScreeningCycle({ silent = false } = {}) {
+  const screeningStartedAt = Date.now();
+  // Stale-busy guard: if a previous cycle has been "busy" far longer than two intervals,
+  // assume it died/hung and clear the lock so screening can resume. Otherwise skip.
+  const intervalMin = config.schedule?.screeningIntervalMin || 10;
+  const staleBusyMs = Math.max(20 * 60_000, intervalMin * 2 * 60_000);
   if (_screeningBusy) {
-    log("cron", "Screening skipped — previous cycle still running");
-    return null;
+    const busyForMs = screeningStartedAt - (_screeningLastTriggered || 0);
+    if (_screeningLastTriggered && busyForMs > staleBusyMs) {
+      log("cron_error", `Screening busy lock stale (${busyForMs}ms > ${staleBusyMs}ms) — clearing and proceeding`);
+    } else {
+      log("cron", `Screening skipped — previous cycle still running (${busyForMs}ms)`);
+      return null;
+    }
   }
   _screeningBusy = true; // set immediately — prevents TOCTOU race with concurrent callers
-  _screeningLastTriggered = Date.now();
+  _screeningLastTriggered = screeningStartedAt;
+
+  // Function-scope diagnostics (assigned in body/finally for structured summary logging)
+  let prescreenedCount = 0;
+  let passingCount = 0;
+  let deployAttempted = false;
+  let deploySucceeded = false;
+  let screeningOutcome = "started";
 
   // Daily drawdown guard: block new deploys if too many stops today
   const maxDailyStops = config.risk?.dailyMaxStopLosses ?? 3;
@@ -498,7 +523,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     return screenReport;
   }
   if (!silent && telegramEnabled()) {
-    liveMessage = await createLiveMessage("🔍 Screening Cycle", "Scanning candidates...");
+    liveMessage = await createLiveMessage("🔍 <b>NYARI POOL, BOS</b>", "Lagi dipindai kandidate...");
   }
   timers.screeningLastRun = Date.now();
   log("cron", `Starting screening cycle [model: ${config.llm.screeningModel}]`);
@@ -520,12 +545,14 @@ export async function runScreeningCycle({ silent = false } = {}) {
       return { candidates: [], rejected: [], totalScreened: 0, ms: 0 };
     });
     const prescreened = prescreenResult.candidates || [];
+    prescreenedCount = prescreened.length;
     const rejectedArr = Array.isArray(prescreenResult.rejected) ? prescreenResult.rejected : [];
     const earlyFilteredExamples = rejectedArr.slice(0, 5)
       .map((r) => ({ name: r.name, reason: r.reason }));
     log("screening", `Prescreen: ${prescreenResult.totalScreened} screened → ${prescreened.length} qualified (${prescreenResult.ms}ms)`);
 
     if (prescreened.length === 0) {
+      screeningOutcome = "no_candidates_after_prescreen";
       const rejExamples = earlyFilteredExamples.slice(0, 3)
         .map((e) => `- ${e.name}: ${e.reason}`)
         .join("\n");
@@ -588,7 +615,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
       return true;
     });
 
+    passingCount = passing.length;
     if (passing.length === 0) {
+      screeningOutcome = "no_candidates_after_filters";
       const combined = filteredOut.length > 0 ? filteredOut : earlyFilteredExamples;
       const combinedExamples = combined.slice(0, 3)
         .map((entry) => `- ${entry.name}: ${entry.reason}`)
@@ -715,8 +744,6 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
     const weightsSummary = config.darwin?.enabled ? getWeightsSummary() : null;
 
-    let deployAttempted = false;
-    let deploySucceeded = false;
     const { content } = await agentLoop(`
 SCREENING CYCLE
 ${strategyBlock}
@@ -796,7 +823,7 @@ STEPS:
 IMPORTANT:
 - Never write "unknown" for OKX. Use real values, omit missing fields, or write exactly "OKX: unavailable".
 - Keep the whole report compact and highly scannable for Telegram.
-      `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 2048, {
+      `, Math.min(config.llm.maxSteps, 10), [], "SCREENER", config.llm.screeningModel, 2048, {
         onToolStart: async ({ name }) => {
           if (name === "deploy_position") deployAttempted = true;
           await liveMessage?.toolStart(name);
@@ -811,6 +838,7 @@ IMPORTANT:
       });
     screenReport = content;
     if (/⛔\s*NO DEPLOY/i.test(content)) {
+      screeningOutcome = "llm_no_deploy";
       appendDecision({
         type: "no_deploy",
         actor: "SCREENER",
@@ -818,6 +846,7 @@ IMPORTANT:
         reason: stripThink(content).slice(0, 500),
       });
     } else if (!deploySucceeded) {
+      screeningOutcome = deployAttempted ? "deploy_attempt_failed" : "no_successful_deploy";
       appendDecision({
         type: "no_deploy",
         actor: "SCREENER",
@@ -825,16 +854,19 @@ IMPORTANT:
         reason: stripThink(content).slice(0, 500),
       });
     }
+    if (deploySucceeded) screeningOutcome = "deploy_succeeded";
   } catch (error) {
+    screeningOutcome = "error";
     log("cron_error", `Screening cycle failed: ${error.message}`);
     screenReport = `Screening cycle failed: ${error.message}`;
   } finally {
+    log("screening", `Screening summary — outcome=${screeningOutcome} prescreened=${prescreenedCount} passing=${passingCount} deployAttempted=${deployAttempted} deploySucceeded=${deploySucceeded} durationMs=${Date.now() - screeningStartedAt}`);
     _screeningBusy = false;
     drainTelegramQueue().catch(() => {});
     if (!silent && telegramEnabled()) {
       if (screenReport) {
         if (liveMessage) await liveMessage.finalize(stripThink(screenReport)).catch(() => {});
-        else sendMessage(`🔍 Screening Cycle\n\n${stripThink(screenReport)}`).catch(() => { });
+        else sendMessage(`🔍 <b>LAPORAN SCREENING, BOS</b>\n\n${stripThink(screenReport)}`).catch(() => { });
       }
     }
   }
@@ -1667,7 +1699,7 @@ async function telegramHandler(msg) {
   if (text === "/positions") {
     try {
       const { positions, total_positions } = await getMyPositions({ force: true });
-      if (total_positions === 0) { await sendHTML("<b>── POSISI ──</b>\n\nTidak ada posisi terbuka saat ini."); return; }
+      if (total_positions === 0) { await sendHTML("<b>── POSISI, BOS ──</b>\n\nDereng wonten posisi mbukak, Tuanku."); return; }
       const cur = config.management.solMode ? "◎" : "$";
       const lines = positions.map((p, i) => {
         const pnlUsd = p.pnl_usd != null ? Number(p.pnl_usd) : 0;
@@ -1685,7 +1717,7 @@ async function telegramHandler(msg) {
           `<code>/close ${i + 1}</code> tutup | <code>/pool ${i + 1}</code> detail`,
         ].join("\n");
       });
-      await sendHTML(`<b>── POSISI (${total_positions}) ──</b>\n\n${lines.join("\n\n")}`);
+      await sendHTML(`<b>── POSISI, BOS (${total_positions}) ──</b>\n\n${lines.join("\n\n")}`);
     } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
     return;
   }
@@ -1703,7 +1735,7 @@ async function telegramHandler(msg) {
       const rangeStatus = pos.in_range ? "🟢 DALAM RANGE" : `🔴 OOR ${pos.minutes_out_of_range ?? 0}m`;
       const cur = config.management.solMode ? "◎" : "$";
       await sendHTML([
-        `<b>── POOL: ${pos.pair} ──</b>`,
+        `<b>── POOL, BOS: ${pos.pair} ──</b>`,
         "",
         `<b>Pool:</b> <code>${pos.pool}</code>`,
         `<b>Posisi:</b> <code>${pos.position}</code>`,
@@ -1738,7 +1770,7 @@ async function telegramHandler(msg) {
         const pnlSign = pnlUsd >= 0 ? "+" : "";
         const emoji = pnlUsd >= 0 ? "🟢" : "🔴";
         await sendHTML(
-          `<b>── TERTUTUP ──</b>\n\n` +
+          `<b>── WIS DITUTUP, BOS ──</b>\n\n` +
           `<b>Pool:</b> ${pos.pair}\n` +
           `<b>PnL:</b> ${emoji} ${pnlSign}$${Math.abs(pnlUsd).toFixed(2)}\n` +
           `<b>Tx:</b> <code>${(closeTxs?.[0] || "n/a").slice(0, 16)}...</code>${claimNote}`
@@ -1765,7 +1797,7 @@ async function telegramHandler(msg) {
           results.push(`❌ ${pos.pair}: gagal (${error.message})`);
         }
       }
-      await sendHTML(`<b>── TUTUP SEMUA SELESAI ──</b>\n\n${results.join("\n")}`).catch(() => {});
+      await sendHTML(`<b>── KABEH WIS DITUTUP, BOS ──</b>\n\n${results.join("\n")}`).catch(() => {});
     } catch (e) {
       await sendMessage(`Error: ${e.message}`).catch(() => {});
     }
@@ -1781,7 +1813,7 @@ async function telegramHandler(msg) {
       if (idx < 0 || idx >= positions.length) { await sendMessage("Nomor invalid. Gunakan /positions dulu."); return; }
       const pos = positions[idx];
       setPositionInstruction(pos.position, note);
-      await sendHTML(`<b>✅ Catatan dipasang untuk ${pos.pair}</b>\n<code>"${note}"</code>`).catch(() => {});
+      await sendHTML(`<b>✅ Cathetan wis dipasang kanggo ${pos.pair}, Bos</b>\n<code>"${note}"</code>`).catch(() => {});
     } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
     return;
   }
@@ -1908,7 +1940,7 @@ async function telegramHandler(msg) {
     const isDeployRequest = !hasCloseIntent && /\bdeploy\b|\bopen position\b|\blp into\b|\badd liquidity\b/i.test(text);
     const agentRole = isDeployRequest ? "SCREENER" : "GENERAL";
     const agentModel = agentRole === "SCREENER" ? config.llm.screeningModel : config.llm.generalModel;
-    liveMessage = await createLiveMessage("🤖 Live Update", `Permintaan: ${text.slice(0, 240)}`);
+    liveMessage = await createLiveMessage("🐶 <b>SIAP, BOS</b>", `Dhawuh: ${text.slice(0, 240)}`);
     const { content } = await agentLoop(text, config.llm.maxSteps, sessionHistory, agentRole, agentModel, null, {
       interactive: true,
       onToolStart: async ({ name }) => { await liveMessage?.toolStart(name); },
@@ -1969,7 +2001,7 @@ function computeBinsBelow(volatility) {
 // Register restarter — when update_config changes intervals, running cron jobs get replaced
 registerCronRestarter(() => { if (cronStarted) startCronJobs(); });
 
-if (isMain && isTTY) {
+if (isMain && isTTY && !DASHBOARD_ONLY) {
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -2261,7 +2293,7 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
 
   rl.on("close", () => shutdown("stdin closed"));
 
-} else if (isMain) {
+} else if (isMain && !DASHBOARD_ONLY) {
   // Non-TTY: start immediately
   log("startup", "Non-TTY mode — starting cron cycles immediately.");
   startCronJobs();

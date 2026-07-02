@@ -8,6 +8,26 @@ PureXBT runs continuous screening and management cycles, deploying capital into 
 
 ---
 
+## What's New (v3.2)
+
+### Trading & Screening
+- **Stablecoin-Quote Blacklist** — pools quoted in USDC/USDT are rejected at the raw-pool screening filter (`screening.blockStablecoinQuote`). Single-sided SOL deploys cannot fund a USDC-quoted pool; this stops the LLM from ever seeing them.
+- **Screening Observability** — every screening cycle ends with a structured summary log (`outcome / prescreened / passing / deployAttempted / durationMs`) covering all early-return paths.
+- **Meteora 429 Hardening** — shared cooldown across all Meteora API callers after a rate-limit; eliminates thundering-herd retries.
+- **Fresh Open-Positions PnL** — positions cache TTL reduced 5m → 30s; dashboard Open Positions PnL refreshes near-live instead of jumping every 5 minutes.
+
+### Dashboard (full redesign)
+- **macOS Desktop UI** — the dashboard is now a full macOS-style desktop: draggable/minimizable windows, dock launcher, menubar, and a macOS lock screen for login.
+- **"Termpink" Theme** — dark terminal skin on top of the macOS shell: near-black base, single pink accent family, full monospace UI, subtle scanlines. Semantic colors (PnL green/red, status) preserved.
+- **ASCII Eye Wallpaper** — live ASCII-art eye rendered on canvas: fluid iris ripples, gaze drift, periodic blink. 20fps capped, pauses when the tab is hidden, static under `prefers-reduced-motion`.
+- **Readable Agent Chat** — agent replies rendered with a safe markdown-lite formatter (paragraphs, lists, headings, inline/fenced code) instead of a single text blob. Escape-first, XSS-safe.
+- **File Menu** — menubar File dropdown links to the Smart Wallets and Learning pages.
+
+### Reliability
+- Assorted fixes across executor/sweep paths, telegram notifications, briefing, and LPAgent/Meridian relay handling accumulated from live operation.
+
+---
+
 ## What's New (v2)
 
 Since the initial release, PureXBT has been significantly upgraded:

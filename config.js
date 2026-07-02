@@ -138,6 +138,7 @@ export const config = {
     securityCheckEnabled: screening.securityCheckEnabled ?? false,
     holderCheckEnabled:   screening.holderCheckEnabled   ?? false,
     trendingDiscoveryEnabled: screening.trendingDiscoveryEnabled ?? false,
+    blockStablecoinQuote: screening.blockStablecoinQuote ?? false,
   },
 
   // ─── Position Management ────────────────

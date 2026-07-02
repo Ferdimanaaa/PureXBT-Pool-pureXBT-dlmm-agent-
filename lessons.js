@@ -1227,12 +1227,26 @@ export async function reconcileClosedPnl(walletAddress) {
   let fixed = 0, skipped = 0;
   const errors = [];
 
+  let decisionsPatched = 0;
+  const decisionData = (() => {
+    try {
+      if (fs.existsSync("./decision-log.json")) {
+        return JSON.parse(fs.readFileSync("./decision-log.json", "utf8"));
+      }
+    } catch { /* optional */ }
+    return null;
+  })();
+
   for (let i = 0; i < perf.length; i++) {
     const r = perf[i];
-    // Only fix records that look unsettled: zero final_value and positive initial_value
+    // Fix zero final_value OR partial withdrawal still settling (withdrawn << deposited).
+    const initial = Number(r.initial_value_usd) || 0;
+    const finalVal = Number(r.final_value_usd) || 0;
     const isUnsettled =
-      (r.final_value_usd == null || r.final_value_usd < ZERO_CUTOFF) &&
-      (r.initial_value_usd != null && r.initial_value_usd > 0);
+      initial > 0 && (
+        finalVal < ZERO_CUTOFF ||
+        (finalVal > 0 && finalVal < initial * 0.85 && (Number(r.pnl_pct) || 0) <= -15)
+      );
     if (!isUnsettled) continue;
     if (!r.pool) { skipped++; continue; }
 
@@ -1246,22 +1260,41 @@ export async function reconcileClosedPnl(walletAddress) {
       );
       if (!entry) { skipped++; continue; }
 
-      const pnlUsd = parseFloat(entry.pnlUsd || 0);
+      const apiPnlUsd = parseFloat(entry.pnlUsd || 0);
+      const apiPnlPct = parseFloat(entry.pnlPctChange || 0);
       const finalValue = parseFloat(entry.allTimeWithdrawals?.total?.usd || 0);
       const initialValue = parseFloat(entry.allTimeDeposits?.total?.usd || 0);
       const feesUsd = parseFloat(entry.allTimeFees?.total?.usd || 0) || r.fees_earned_usd || 0;
 
-      if (finalValue > 0) {
+      if (finalValue > 0 && finalValue >= initialValue * 0.85) {
         r.final_value_usd = finalValue;
         r.initial_value_usd = initialValue || r.initial_value_usd;
         r.fees_earned_usd = feesUsd;
-        r.pnl_usd = Math.round((finalValue + feesUsd - r.initial_value_usd) * 100) / 100;
-        r.pnl_pct = r.initial_value_usd > 0
-          ? Math.round(((r.pnl_usd / r.initial_value_usd) * 100) * 100) / 100
-          : r.pnl_pct;
+        r.pnl_usd = Number.isFinite(apiPnlUsd)
+          ? Math.round(apiPnlUsd * 100) / 100
+          : Math.round((finalValue + feesUsd - r.initial_value_usd) * 100) / 100;
+        r.pnl_pct = Number.isFinite(apiPnlPct)
+          ? Math.round(apiPnlPct * 100) / 100
+          : (r.initial_value_usd > 0
+            ? Math.round(((r.pnl_usd / r.initial_value_usd) * 100) * 100) / 100
+            : r.pnl_pct);
         r._reconciled_at = new Date().toISOString();
+
+        if (decisionData?.decisions && r.position) {
+          for (const d of decisionData.decisions) {
+            if ((d.type === "close" || d.action === "close") &&
+                String(d.position || "").toLowerCase() === String(r.position).toLowerCase()) {
+              d.metrics = d.metrics || {};
+              d.metrics.pnl_usd = r.pnl_usd;
+              d.metrics.pnl_pct = r.pnl_pct;
+              d.metrics.fees_usd = feesUsd;
+              decisionsPatched++;
+            }
+          }
+        }
+
         fixed++;
-        log("reconcile", `Backfilled ${r.pool_name}: pnl=${r.pnl_usd}, fees=${r.fees_earned_usd}, final=${r.final_value_usd}`);
+        log("reconcile", `Backfilled ${r.pool_name}: pnl=${r.pnl_usd} (${r.pnl_pct}%), fees=${r.fees_earned_usd}, final=${r.final_value_usd}`);
       } else {
         skipped++;
       }
@@ -1272,8 +1305,11 @@ export async function reconcileClosedPnl(walletAddress) {
 
   if (fixed > 0) {
     save(data);
-    log("reconcile", `PnL reconciliation complete: ${fixed} fixed, ${skipped} skipped, ${errors.length} errors`);
+    if (decisionData && decisionsPatched > 0) {
+      fs.writeFileSync("./decision-log.json", JSON.stringify(decisionData, null, 2));
+    }
+    log("reconcile", `PnL reconciliation complete: ${fixed} fixed, ${skipped} skipped, ${decisionsPatched} decision-log entries patched, ${errors.length} errors`);
   }
 
-  return { fixed, skipped, errors };
+  return { fixed, skipped, decisionsPatched, errors };
 }

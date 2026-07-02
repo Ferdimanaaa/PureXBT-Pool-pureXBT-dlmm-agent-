@@ -912,7 +912,7 @@ export async function deployPosition({
   }
 }
 
-const POSITIONS_CACHE_TTL = 5 * 60_000; // 5 minutes
+const POSITIONS_CACHE_TTL = 30_000; // 30 seconds (ex-5m; PnL freshness fix, same as Syerin S17)
 
 let _positionsCache = null;
 let _positionsCacheAt = 0;
@@ -1158,7 +1158,7 @@ async function fetchRawOpenPositionsFromMeridian({ walletAddress, agentId }) {
   const payload = await agentMeridianJson(`/positions/open/raw?${search.toString()}`, {
     headers: getAgentMeridianHeaders(),
     retry: {
-      maxElapsedMs: 30_000,
+      maxElapsedMs: 60_000,
       perAttemptTimeoutMs: 10_000,
     },
   });
@@ -1980,13 +1980,20 @@ export async function closePosition({ position_address, reason }) {
         minutesOOR = Math.floor((Date.now() - new Date(tracked.out_of_range_since).getTime()) / 60000);
       }
 
-      const shouldRejectClosedPnl = (pct, closeReasonText) => {
+      const shouldRejectClosedPnl = (posEntry, pct, closeReasonText) => {
         if (!Number.isFinite(pct)) return false;
         const reasonText = String(closeReasonText || "").toLowerCase();
         const stopLossTriggered = reasonText.includes("stop loss");
+        if (stopLossTriggered) return false;
         // Meteora sometimes briefly reports absurd closed pnl while the record is settling.
-        // Trust legitimate stop-loss disasters, but reject obviously unsettled outliers otherwise.
-        return !stopLossTriggered && pct <= -90;
+        if (pct <= -90) return true;
+        // Partial withdrawal indexed before full close settles (e.g. AFKHERO: $172/$573 withdrawn).
+        const deposit = parseFloat(posEntry?.allTimeDeposits?.total?.usd || 0);
+        const withdrawn = parseFloat(posEntry?.allTimeWithdrawals?.total?.usd || 0);
+        if (deposit >= 20 && withdrawn > 0 && withdrawn < deposit * 0.85 && pct <= -15) {
+          return true;
+        }
+        return false;
       };
 
       // Fetch closed PnL from API — authoritative source after withdrawal settles
@@ -2011,8 +2018,8 @@ export async function closePosition({ position_address, reason }) {
               const nextInitialUsd = parseFloat(posEntry.allTimeDeposits?.total?.usd || 0);
               const nextFeesUsd = parseFloat(posEntry.allTimeFees?.total?.usd || 0) || feesUsd;
 
-              if (shouldRejectClosedPnl(nextPnlPct, reason || tracked?.close_reason)) {
-                log("close_warn", `Rejected unsettled closed PnL for ${position_address.slice(0, 8)} on attempt ${attempt + 1}/6: ${nextPnlPct.toFixed(2)}%`);
+              if (shouldRejectClosedPnl(posEntry, nextPnlPct, reason || tracked?.close_reason)) {
+                log("close_warn", `Rejected unsettled closed PnL for ${position_address.slice(0, 8)} on attempt ${attempt + 1}/6: ${nextPnlPct.toFixed(2)}% (withdrawn=${nextFinalValueUsd.toFixed(2)}/${nextInitialUsd.toFixed(2)} USD)`);
               } else {
                 pnlTrueUsd    = nextPnlUsd;
                 pnlUsd        = nextPnlValue;

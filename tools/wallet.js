@@ -99,7 +99,8 @@ async function fetchWithRetry(url, attempt = 1) {
  * Returns USD-denominated values provided by Helius.
  * Falls back to Solana RPC for SOL + USDC when Helius is down.
  */
-export async function getWalletBalances() {
+export async function getWalletBalances(opts = {}) {
+  const _forceFresh = opts && opts.force === true;
   let walletAddress;
   try {
     walletAddress = getWallet().publicKey.toString();
@@ -114,7 +115,7 @@ export async function getWalletBalances() {
   }
 
   // ── Cache: return fresh cached value ─────────────────────────────────
-  if (_balanceCache.data && Date.now() < _balanceCache.until) {
+  if (!_forceFresh && _balanceCache.data && Date.now() < _balanceCache.until) {
     return _balanceCache.data;
   }
   // ── Dedup: wait for in-flight fetch instead of hammering Helius ─────
@@ -181,8 +182,7 @@ export async function getWalletBalances() {
           total_usd: 0,
           _fallback_rpc: true,
         };
-        _balanceCache.data = fallbackResult;
-        _balanceCache.until = Date.now() + 15000;
+        // NOTE: fallback is NOT cached so a retry can immediately re-try Helius
         log("wallet_info", `RPC fallback: ${sol} SOL, ${usdc} USDC`);
         return fallbackResult;
       } catch (rpcError) {

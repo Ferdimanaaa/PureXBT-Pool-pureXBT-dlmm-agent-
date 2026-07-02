@@ -117,6 +117,7 @@ function getClient() {
   return new OpenAI({
     baseURL: process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1",
     apiKey: process.env.LLM_API_KEY || process.env.OPENROUTER_API_KEY || "sk-no-key",
+    timeout: 60_000,
   });
 }
 
@@ -259,17 +260,25 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             ...(m.reasoning_content ? { reasoning_content: m.reasoning_content } : {}),
           }));
 
-          // New-gen models (gpt-5, o1/o3/o4, deepseek-v4) require max_completion_tokens instead of max_tokens
+          // New-gen models (gpt-5, o1/o3/o4, deepseek-v4) require max_completion_tokens instead of max_tokens.
+          // Some OpenAI-compatible gateways reject max_tokens below 16; clamp at the request boundary.
+          const requestedMaxTokens = Number(maxOutputTokens ?? config.llm.maxTokens);
+          const safeMaxTokens = Number.isFinite(requestedMaxTokens) && requestedMaxTokens >= 16
+            ? Math.floor(requestedMaxTokens)
+            : 16;
+          if (safeMaxTokens !== requestedMaxTokens) {
+            log("agent", `Clamped max output tokens from ${maxOutputTokens ?? config.llm.maxTokens} to ${safeMaxTokens}`);
+          }
           const tokenParam = /^(gpt-5|o[134]|deepseek-v4)/.test(usedModel)
-            ? { max_completion_tokens: maxOutputTokens ?? config.llm.maxTokens }
-            : { max_tokens: maxOutputTokens ?? config.llm.maxTokens };
+            ? { max_completion_tokens: safeMaxTokens }
+            : { max_tokens: safeMaxTokens };
 
           response = await getClient().chat.completions.create({
             model: usedModel,
             messages: safeMessages,
             tools: getToolsForRole(agentType, goal),
             tool_choice: toolChoice,
-            temperature: config.llm.temperature,
+            ...(/(?:sonnet-5|gpt-5|o[134])/.test(usedModel) ? {} : { temperature: config.llm.temperature }),
             ...tokenParam,
           });
         } catch (error) {
@@ -289,7 +298,8 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
           throw error;
         }
         if (response.choices?.length) break;
-        const errCode = response.error?.code;
+        // Detect nginx/proxy HTML error pages (504/502/503) — treat as retriable 504
+        const errCode = /<html|<title|nginx|gateway|cloudflare/i.test(JSON.stringify(response)) ? 504 : response.error?.code;
         if (errCode === 502 || errCode === 503 || errCode === 504 || errCode === 529) {
           const wait = (attempt + 1) * 5000;
           if (attempt === 1 && usedModel !== FALLBACK_MODEL) {

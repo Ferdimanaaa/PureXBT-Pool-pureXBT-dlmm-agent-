@@ -421,40 +421,51 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
   const poolStr = (binStep || baseFee)
     ? `Bin step: ${binStep ?? "?"}  |  Base fee: ${baseFee != null ? baseFee + "%" : "?"}\n`
     : "";
+  const _dHead = `┏━━ 🚀 <b>WIS DI-DEPLOY, BOS</b> ━━┓\n`;
+  const _dPool = `┃ Pool: ${pair}\n`;
+  const _dAmt = `┃ Modal: ${amountSol} SOL\n`;
+  const _dPrice = priceStr ? `┃ ${priceStr}` : "";
+  const _dCov = coverageStr ? `┃ ${coverageStr}` : "";
+  const _dPoolInfo = poolStr ? `┃ ${poolStr}` : "";
+  const _dPos = `┃ Posisi: <code>${position?.slice(0, 8)}...</code>\n`;
+  const _dTx = `┃ Tx: <code>${tx?.slice(0, 16)}...</code>\n`;
+  const _dFoot = `┗━━ 🐶 Wis mlebu liquidity, Tuanku. ━━┛`;
   await sendHTML(
-    `✅ <b>Deployed</b> ${pair}\n` +
-    `Amount: ${amountSol} SOL\n` +
-    priceStr +
-    coverageStr +
-    poolStr +
-    `Position: <code>${position?.slice(0, 8)}...</code>\n` +
-    `Tx: <code>${tx?.slice(0, 16)}...</code>`
+    _dHead + _dPool + _dAmt + _dPrice + _dCov + _dPoolInfo + _dPos + _dTx + _dFoot
   );
 }
 
 export async function notifyClose({ pair, pnlUsd, pnlPct }) {
   if (hasActiveLiveMessage()) return;
   const sign = pnlUsd >= 0 ? "+" : "";
+  const _cMood = (pnlUsd ?? 0) >= 0 ? "🟢 bathi" : "🔴 buntung";
   await sendHTML(
-    `🔒 <b>Closed</b> ${pair}\n` +
-    `PnL: ${sign}$${(pnlUsd ?? 0).toFixed(2)} (${sign}${(pnlPct ?? 0).toFixed(2)}%)`
+    `┏━━ 🔒 <b>POSISI DITUTUP, BOS</b> ━━┓\n` +
+    `┃ Pool: ${pair}\n` +
+    `┃ PnL: ${sign}$${(pnlUsd ?? 0).toFixed(2)} (${sign}${(pnlPct ?? 0).toFixed(2)}%)\n` +
+    `┃ Asil: ${_cMood}\n` +
+    `┗━━ 🐶 Wis ditutup, Tuanku. ━━┛`
   );
 }
 
 export async function notifySwap({ inputSymbol, outputSymbol, amountIn, amountOut, tx }) {
   if (hasActiveLiveMessage()) return;
   await sendHTML(
-    `🔄 <b>Swapped</b> ${inputSymbol} → ${outputSymbol}\n` +
-    `In: ${amountIn ?? "?"} | Out: ${amountOut ?? "?"}\n` +
-    `Tx: <code>${tx?.slice(0, 16)}...</code>`
+    `┏━━ 🔄 <b>WIS DITUKER, BOS</b> ━━┓\n` +
+    `┃ Saka: ${inputSymbol} → ${outputSymbol}\n` +
+    `┃ Mlebu: ${amountIn ?? "?"} | Metu: ${amountOut ?? "?"}\n` +
+    `┃ Tx: <code>${tx?.slice(0, 16)}...</code>\n` +
+    `┗━━ 🐶 Wis dituker, Tuanku. ━━┛`
   );
 }
 
 export async function notifyOutOfRange({ pair, minutesOOR }) {
   if (hasActiveLiveMessage()) return;
   await sendHTML(
-    `⚠️ <b>Out of Range</b> ${pair}\n` +
-    `Been OOR for ${minutesOOR} minutes`
+    `┏━━ ⚠️ <b>METU RANGE, BOS</b> ━━┓\n` +
+    `┃ Pool: ${pair}\n` +
+    `┃ Wis ${minutesOOR} menit posisine metu saka range.\n` +
+    `┗━━ 🐶 Mangga dipirsani, Tuanku. ━━┛`
   );
 }
 

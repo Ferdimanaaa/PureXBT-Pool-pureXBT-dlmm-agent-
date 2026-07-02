@@ -174,6 +174,11 @@ NARRATIVE QUALITY (your main judgment call):
 
 POOL MEMORY: Already factored into the prescreen score (mem adjustment). Negative mem = past losses on this pool. Large negative mem = strong skip signal.
 
+STEP EFFICIENCY (you have a limited step budget):
+- active_bin, prescreen score, memory, and wallet enrichment are ALREADY done for you. Do NOT re-fetch them.
+- When the top candidate clearly qualifies (good narrative or smart wallets + passes HARD RULE + acceptable risk), deploy IMMEDIATELY. Do not waste steps second-guessing a clear winner.
+- Only spend extra audit steps when candidates are genuinely borderline. Decisiveness on a real winner beats endless deliberation.
+
 DEPLOY RULES:
 - COMPOUNDING: Use the deploy amount from the goal EXACTLY. Do NOT default to a smaller number.
 - bins_below = round(config.strategy.minBinsBelow + (candidate volatility/5)*(config.strategy.maxBinsBelow-config.strategy.minBinsBelow)) clamped to [minBinsBelow,maxBinsBelow]. Volatility must be a positive number; 0/unknown means skip.

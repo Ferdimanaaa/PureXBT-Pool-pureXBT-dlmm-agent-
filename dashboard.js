@@ -1628,6 +1628,7 @@ function isProcessAlive(pid) {
 }
 
 const PM2_AGENT_NAME = "pureXBT";
+const ECOSYSTEM_PATH = path.join(__dirname, "ecosystem.config.cjs");
 
 function getPM2AgentInfo() {
   try {
@@ -1691,7 +1692,11 @@ async function handleStartAgent(req, res) {
   _primaryAgent = null;
   try { fs.unlinkSync(AGENT_PID_FILE); } catch {}
   try {
-    execSync(`pm2 start ${PM2_AGENT_NAME} --update-env`, { timeout: 15000 });
+    const agentEnv = { ...process.env };
+    delete agentEnv.DASHBOARD_ONLY;
+    agentEnv.AGENT_NO_DASHBOARD = "1";
+    try { execSync(`pm2 delete ${PM2_AGENT_NAME}`, { timeout: 10000, stdio: "ignore", env: agentEnv }); } catch {}
+    execSync(`pm2 start ${ECOSYSTEM_PATH} --only ${PM2_AGENT_NAME}`, { timeout: 15000, env: agentEnv });
     log("dashboard", `Agent started via PM2 (${PM2_AGENT_NAME})`);
     await new Promise((r) => setTimeout(r, 1500));
     const newInfo = getPM2AgentInfo();
@@ -2038,7 +2043,13 @@ const API_ROUTES = new Set([
 
 function createServer() {
   const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url, `http://localhost:${PORT}`);
+    let url;
+    try {
+      url = new URL(req.url, `http://localhost:${PORT}`);
+    } catch {
+      res.writeHead(400, { "Content-Type": "text/plain" });
+      return res.end("Bad Request");
+    }
     const p = url.pathname;
     const isAPI = API_ROUTES.has(p) || p.startsWith("/api/wallets/") || p.startsWith("/api/agent/");
 

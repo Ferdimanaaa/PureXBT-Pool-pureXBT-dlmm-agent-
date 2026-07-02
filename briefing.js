@@ -31,30 +31,31 @@ export async function generateBriefing() {
 
   // 5. Format Message
   const lines = [
-    "☀️ <b>Morning Briefing</b> (Last 24h)",
-    "────────────────",
-    `<b>Activity:</b>`,
-    `📥 Positions Opened: ${openedLast24h.length}`,
-    `📤 Positions Closed: ${closedLast24h.length}`,
+    "☀️ <b>SUGENG ENJING, BOS</b> — Laporan 24 Jam Kepungkur",
+    "━━━━━━━━━━━━━━━━",
+    `<b>📋 Kegiatan:</b>`,
+    `📥 Posisi dibukak : ${openedLast24h.length}`,
+    `📤 Posisi ditutup : ${closedLast24h.length}`,
     "",
-    `<b>Performance:</b>`,
-    `💰 Net PnL: ${totalPnLUsd >= 0 ? "+" : ""}$${totalPnLUsd.toFixed(2)}`,
-    `💎 Fees Earned: $${totalFeesUsd.toFixed(2)}`,
+    `<b>💰 Asil:</b>`,
+    `💵 PnL Bersih : ${totalPnLUsd >= 0 ? "+" : ""}$${totalPnLUsd.toFixed(2)}`,
+    `💎 Fee Klumpuk: $${totalFeesUsd.toFixed(2)}`,
     perfLast24h.length > 0
-      ? `📈 Win Rate (24h): ${Math.round((perfLast24h.filter(p => p.pnl_usd > 0).length / perfLast24h.length) * 100)}%`
-      : "📈 Win Rate (24h): N/A",
+      ? `📈 Win Rate (24j): ${Math.round((perfLast24h.filter(p => p.pnl_usd > 0).length / perfLast24h.length) * 100)}%`
+      : "📈 Win Rate (24j): durung ana data",
     "",
-    `<b>Lessons Learned:</b>`,
+    `<b>📚 Piwulang Anyar:</b>`,
     lessonsLast24h.length > 0
       ? lessonsLast24h.map(l => `• ${l.rule}`).join("\n")
-      : "• No new lessons recorded overnight.",
+      : "• Mboten wonten piwulang anyar dalu menika, Bos.",
     "",
-    `<b>Current Portfolio:</b>`,
-    `📂 Open Positions: ${openPositions.length}`,
+    `<b>💼 Portofolio Saiki:</b>`,
+    `📂 Posisi mbukak: ${openPositions.length}`,
     perfSummary
-      ? `📊 All-time PnL: $${perfSummary.total_pnl_usd.toFixed(2)} (${perfSummary.win_rate_pct}% win)`
+      ? `📊 PnL Sakabehe: $${perfSummary.total_pnl_usd.toFixed(2)} (${perfSummary.win_rate_pct}% win)`
       : "",
-    "────────────────"
+    "━━━━━━━━━━━━━━━━",
+    "🐶 Atur tugas marang aDogku, Tuanku."
   ];
 
   return lines.join("\n");

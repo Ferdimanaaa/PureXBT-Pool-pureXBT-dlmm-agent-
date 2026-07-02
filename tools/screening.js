@@ -196,6 +196,13 @@ function getRawPoolScreeningRejectReason(pool, s) {
   }
   if (pool?.base_token_has_critical_warnings === true) return "base token has critical warnings";
   if (pool?.quote_token_has_critical_warnings === true) return "quote token has critical warnings";
+  if (s.blockStablecoinQuote) {
+    const qMint = quote?.address;
+    const stableMints = [config?.tokens?.USDC, config?.tokens?.USDT].filter(Boolean);
+    if (qMint && stableMints.includes(qMint)) {
+      return `quote is stablecoin (${quote?.symbol || qMint})`;
+    }
+  }
   if (pool?.base_token_has_high_single_ownership === true) return "base token has high single ownership";
   if (pool?.pool_type && pool.pool_type !== "dlmm") return `pool_type ${pool.pool_type} is not dlmm`;
 
@@ -352,7 +359,36 @@ const METEORA_RETRY_MAX = 5;
 const METEORA_RETRY_BASE_MS = 2000;
 const METEORA_RETRY_MAX_MS = 60000;
 let _meteoraLastCall = 0;           // throttle: epoch ms of last fetch() call
+let _meteoraCooldownUntil = 0;      // shared cooldown after 429s; prevents thundering herd retries
 const METEORA_THROTTLE_MS = 1000;    // 1 call/sec — well below 30 RPS Meteora limit
+const METEORA_FETCH_TIMEOUT_MS = 15000;
+const METEORA_MAX_CONCURRENCY = 3;    // bounded fan-out for per-pool discovery calls
+
+/**
+ * Run an async mapper over items with bounded concurrency, returning
+ * Promise.allSettled-shaped results ({ status, value } | { status, reason })
+ * in the SAME order as the input. Caps simultaneous Meteora calls so they
+ * do not all cross the global throttle barrier at once (kills 429 storms).
+ */
+async function mapMeteoraBounded(items, mapper, limit = METEORA_MAX_CONCURRENCY) {
+  const arr = Array.from(items);
+  const results = new Array(arr.length);
+  let next = 0;
+  async function worker() {
+    while (next < arr.length) {
+      const i = next++;
+      try {
+        results[i] = { status: "fulfilled", value: await mapper(arr[i], i) };
+      } catch (err) {
+        results[i] = { status: "rejected", reason: err };
+      }
+    }
+  }
+  const pool = Array.from({ length: Math.max(1, Math.min(limit, arr.length || 1)) }, () => worker());
+  await Promise.all(pool);
+  return results;
+}
+
 
 /**
  * Fetch from Meteora Pool Discovery API with cache + retry/backoff.
@@ -381,21 +417,44 @@ export async function meteoraFetchWithCache(url) {
   }
 }
 
+async function meteoraFetchWithTimeout(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), METEORA_FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function meteoraFetchWithRetry(url, attempt) {
+  // Global cooldown after 429s — one throttled endpoint should slow every Meteora caller.
+  const cooldownWait = Math.max(0, _meteoraCooldownUntil - Date.now());
+  if (cooldownWait > 0) await new Promise((r) => setTimeout(r, cooldownWait));
+
   // Global throttle — prevents burst of 60+ calls in 21ms (LLM parallel tool calls)
   const now = Date.now();
   const throttleWait = Math.max(0, METEORA_THROTTLE_MS - (now - _meteoraLastCall));
   if (throttleWait > 0) await new Promise((r) => setTimeout(r, throttleWait));
   _meteoraLastCall = Date.now();
 
-  const res = await fetch(url);
+  let res;
+  try {
+    res = await meteoraFetchWithTimeout(url);
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`Pool Discovery API timeout after ${METEORA_FETCH_TIMEOUT_MS}ms`);
+    }
+    throw error;
+  }
 
   if (res.status === 429 && attempt <= METEORA_RETRY_MAX) {
     const retryAfter = parseInt(res.headers.get("retry-after") || "0", 10);
     const waitMs = retryAfter > 0
       ? Math.min(retryAfter * 1000, METEORA_RETRY_MAX_MS)
       : Math.min(METEORA_RETRY_BASE_MS * Math.pow(2, attempt - 1), METEORA_RETRY_MAX_MS);
-    log("screening", `Meteora 429 — waiting ${waitMs}ms (attempt ${attempt}/${METEORA_RETRY_MAX}) url=${url.slice(0, 80)}...`);
+    _meteoraCooldownUntil = Math.max(_meteoraCooldownUntil, Date.now() + waitMs);
+    log("screening", `Meteora 429 — cooling down ${waitMs}ms (attempt ${attempt}/${METEORA_RETRY_MAX}) url=${url.slice(0, 80)}...`);
     await new Promise((r) => setTimeout(r, waitMs));
     return meteoraFetchWithRetry(url, attempt + 1);
   }
@@ -413,6 +472,7 @@ async function meteoraFetchWithRetry(url, attempt) {
 export function _resetMeteoraCache() {
   _meteoraCache.clear();
   _meteoraInflight.clear();
+  _meteoraCooldownUntil = 0;
 }
 
 async function applyVolatilityTimeframe(rawPools, sourceTimeframe) {
@@ -430,15 +490,16 @@ async function applyVolatilityTimeframe(rawPools, sourceTimeframe) {
   if (sourceTimeframe === volatilityTimeframe) return rawPools;
 
   const uniquePoolAddresses = [...new Set(rawPools.map((pool) => pool?.pool_address).filter(Boolean))];
-  const longResults = await Promise.allSettled(
-    uniquePoolAddresses.map((poolAddress) =>
-      fetchPoolDiscoveryDetail({ poolAddress, timeframe: volatilityTimeframe })
-        .then((pool) => ({
-          poolAddress,
-          volatility: numeric(pool?.volatility),
-          volume: numeric(pool?.volume),
-        }))
-    )
+  const longResults = await mapMeteoraBounded(
+    uniquePoolAddresses,
+    async (poolAddress) => {
+      const pool = await fetchPoolDiscoveryDetail({ poolAddress, timeframe: volatilityTimeframe });
+      return {
+        poolAddress,
+        volatility: numeric(pool?.volatility),
+        volume: numeric(pool?.volume),
+      };
+    }
   );
 
   const metricsByPool = new Map();
@@ -586,11 +647,12 @@ async function enrichPvpRisk(pools) {
 async function refreshDiscordOnlyPools(pools, timeframe) {
   if (!pools.length) return;
   const FIELDS = ["volume", "fee", "active_tvl", "tvl", "volatility", "fee_active_tvl_ratio"];
-  const results = await Promise.allSettled(
-    pools.map((pool) =>
-      fetchPoolDiscoveryDetail({ poolAddress: pool.pool_address, timeframe })
-        .then((fresh) => ({ pool, fresh }))
-    )
+  const results = await mapMeteoraBounded(
+    pools,
+    async (pool) => {
+      const fresh = await fetchPoolDiscoveryDetail({ poolAddress: pool.pool_address, timeframe });
+      return { pool, fresh };
+    }
   );
   for (const result of results) {
     if (result.status !== "fulfilled" || !result.value.fresh) continue;
