@@ -505,7 +505,7 @@ export async function notifyChaseResult({ pair, ok, detail }) {
       : `┏━━ 🛑 <b>RESHAPE BATAL, BOS</b> ━━┓\n` +
         `┃ Pool: ${pair}\n` +
         `┃ Momentum dinilai PATAH — posisi ditutup biasa\n` +
-        `┃ ${escC(detail).slice(0, 200)}\n` +
+        `┃ ${escC(detail).slice(0, 350)}\n` +
         `┗━━ 🐶 Ora sido ngoyak, Tuanku. ━━┛`
   ).catch(() => {});
 }
