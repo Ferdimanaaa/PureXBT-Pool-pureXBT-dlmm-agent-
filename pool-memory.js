@@ -103,7 +103,9 @@ export function markPoolClosed(poolAddress, { reason, cooldownHours = 2, base_mi
   entry.total_deploys = entry.deploys.length;
   entry.last_outcome = "unknown";
   // Set cooldown to prevent immediate re-deploy
-  if (cooldownHours > 0) {
+  const _chasePending = entry.chase_pending_until && Date.now() < Number(entry.chase_pending_until); /* __CHASEUP__ */
+  if (_chasePending) log("pool-memory", `Chase pending — skip cooldown for ${entry.name}`);
+  if (!_chasePending && cooldownHours > 0) {
     const mint = base_mint || entry.base_mint;
     setPoolCooldown(entry, cooldownHours, reason || "externally_closed");
     if (mint) setBaseMintCooldown(db, mint, cooldownHours, reason || "externally_closed");
@@ -479,4 +481,31 @@ export function addPoolNote({ pool_address, note }) {
   save(db);
   log("pool-memory", `Note added to ${pool_address.slice(0, 8)}: ${safeNote}`);
   return { saved: true, pool_address, note: safeNote };
+}
+
+/* __POOLNAME_FALLBACK__ — nama pool dari memory utk posisi tanpa tracking (tampilan). */
+export function poolNameFromMemory(poolAddress) {
+  if (!poolAddress) return null;
+  try { return load()[poolAddress]?.name || null; } catch { return null; }
+}
+
+/* __CHASEUP__ chase-up bookkeeping */
+export function recordChase(poolAddress) {
+  if (!poolAddress) return;
+  const db = load();
+  const entry = db[poolAddress];
+  if (!entry) return;
+  entry.chase_history = (entry.chase_history || []).filter((t) => Date.now() - t < 48 * 3600 * 1000);
+  entry.chase_history.push(Date.now());
+  entry.chase_pending_until = Date.now() + 10 * 60 * 1000;
+  save(db);
+}
+export function chaseCountInWindow(poolAddress, hours) {
+  if (!poolAddress) return 0;
+  try {
+    const entry = load()[poolAddress];
+    if (!entry?.chase_history) return 0;
+    const cutoff = Date.now() - (hours || 6) * 3600 * 1000;
+    return entry.chase_history.filter((t) => t >= cutoff).length;
+  } catch { return 0; }
 }

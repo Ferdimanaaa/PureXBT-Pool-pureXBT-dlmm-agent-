@@ -26,7 +26,7 @@ import {
 } from "../state.js";
 import { markPoolOpened } from "../pool-memory.js";
 import { recordPerformance } from "../lessons.js";
-import { isBaseMintOnCooldown, isPoolOnCooldown } from "../pool-memory.js";
+import { isBaseMintOnCooldown, isPoolOnCooldown, poolNameFromMemory } from "../pool-memory.js"; /* __POOLNAME_FALLBACK__ */
 import { normalizeMint } from "./wallet.js";
 import { appendDecision } from "../decision-log.js";
 import { agentMeridianJson, getAgentIdForRequests, getAgentMeridianHeaders } from "./agent-meridian.js";
@@ -456,6 +456,7 @@ export async function deployPosition({
   amount_x,
   amount_y,
   strategy,
+  strategy_reason, /* __HYBRIDSTRAT__ */
   bins_below,
   bins_above,
   downside_pct,
@@ -722,7 +723,7 @@ export async function deployPosition({
         pool: pool_address,
         pool_name,
         position: positionAddress,
-        summary: `Relay deployed ${finalAmountY} SOL with ${activeStrategy}`,
+        summary: `Relay deployed ${finalAmountY} SOL with ${activeStrategy}${strategy_reason ? ` — ${strategy_reason}` : ""}`,
         reason: `Chosen range ${minBinId}→${maxBinId} around active bin ${activeBin.binId}`,
         risks: [
           normalizedVolatility != null ? `volatility ${normalizedVolatility}` : null,
@@ -731,6 +732,7 @@ export async function deployPosition({
         metrics: {
           amount_sol: finalAmountY,
           strategy: activeStrategy,
+          strategy_reason: strategy_reason || "",
           active_bin: activeBin.binId,
           min_bin: minBinId,
           max_bin: maxBinId,
@@ -868,7 +870,7 @@ export async function deployPosition({
       pool: pool_address,
       pool_name,
       position: newPosition.publicKey.toString(),
-      summary: `Deployed ${finalAmountY} SOL with ${activeStrategy}`,
+      summary: `Deployed ${finalAmountY} SOL with ${activeStrategy}${strategy_reason ? ` — ${strategy_reason}` : ""}`,
       reason: `Chosen range ${minBinId}→${maxBinId} around active bin ${activeBin.binId}`,
       risks: [
         normalizedVolatility != null ? `volatility ${normalizedVolatility}` : null,
@@ -877,6 +879,7 @@ export async function deployPosition({
       metrics: {
         amount_sol: finalAmountY,
         strategy: activeStrategy,
+        strategy_reason: strategy_reason || "",
         active_bin: activeBin.binId,
         min_bin: minBinId,
         max_bin: maxBinId,
@@ -912,7 +915,7 @@ export async function deployPosition({
   }
 }
 
-const POSITIONS_CACHE_TTL = 30_000; // 30 seconds (ex-5m; PnL freshness fix, same as Syerin S17)
+const POSITIONS_CACHE_TTL = 10_000; // __PNLRENDER__ 10s (ex-30s; dashboard PnL snappiness S29)
 
 let _positionsCache = null;
 let _positionsCacheAt = 0;
@@ -1317,7 +1320,7 @@ export async function getMyPositions({ force = false, silent = false, wallet_add
         positions.push({
           position:           positionAddress,
           pool:               pool.poolAddress,
-          pair:               tracked?.pool_name || `${pool.tokenX}/${pool.tokenY}`,
+          pair:               tracked?.pool_name || poolNameFromMemory(pool.poolAddress) || `${pool.tokenX}/${pool.tokenY}`,
           base_mint:          pool.tokenXMint,
           lower_bin:          lowerBin,
           upper_bin:          upperBin,
@@ -1756,6 +1759,25 @@ export async function closePosition({ position_address, reason }) {
           }
         } catch (e) {
           log("close_warn", `Relay closed PnL fetch failed: ${e.message}`);
+        }
+        // Fallback to pre-close cache snapshot if closed API had no data (mirrors direct-close path)
+        if (finalValueUsd === 0) {
+          const cachedPos = _positionsCache?.positions?.find(p => p.position === position_address);
+          if (cachedPos) {
+            pnlTrueUsd    = cachedPos.pnl_true_usd ?? (config.management.solMode ? 0 : cachedPos.pnl_usd) ?? 0;
+            pnlUsd        = config.management.solMode ? (cachedPos.pnl_usd ?? 0) : pnlTrueUsd;
+            pnlPct        = cachedPos.pnl_pct   ?? 0;
+            feesUsd       = (cachedPos.collected_fees_true_usd || 0) + (cachedPos.unclaimed_fees_true_usd || 0);
+            initialUsd    = tracked.initial_value_usd || 0;
+            if (initialUsd > 0) {
+              finalValueUsd = Math.max(0, initialUsd + pnlTrueUsd - feesUsd);
+              if (!config.management.solMode) pnlPct = (pnlTrueUsd / initialUsd) * 100;
+            } else {
+              finalValueUsd = cachedPos.total_value_true_usd ?? cachedPos.total_value_usd ?? 0;
+              initialUsd = Math.max(0, finalValueUsd + feesUsd - pnlTrueUsd);
+            }
+            log("close_warn", `Using cached pnl fallback because closed API has not settled yet (relay path)`);
+          }
         }
 
         const closeBaseMint = livePosition?.base_mint || pool.lbPair.tokenXMint.toString();

@@ -16,8 +16,30 @@ module.exports = {
       min_uptime: "10s",
       env: {
         NODE_ENV: "production",
-        LLM_MODEL: "deepseek-v4-pro",
-        WALLET_ID: "Fifb143PcvK15N9zVULLUqz3mS6uAMHaSSCrmmLPURE",
+        NODE_OPTIONS: "--dns-result-order=ipv4first",
+        LLM_MODEL: "cc/claude-sonnet-5",
+        WALLET_ID: "YOUR_WALLET_PUBLIC_ADDRESS", // opsional: pilih blok config per-wallet di user-config.json
+        AGENT_NO_DASHBOARD: "1",
+      },
+    },
+    {
+      name: "pureXBT-dash",
+      script: "index.js",
+      cwd: __dirname,
+      interpreter: "node",
+      instances: 1,
+      exec_mode: "fork",
+      autorestart: true,
+      restart_delay: 5000,
+      kill_timeout: 10000,
+      max_restarts: 10,
+      min_uptime: "10s",
+      env: {
+        NODE_ENV: "production",
+        NODE_OPTIONS: "--dns-result-order=ipv4first",
+        LLM_MODEL: "cc/claude-sonnet-5",
+        WALLET_ID: "YOUR_WALLET_PUBLIC_ADDRESS", // opsional: pilih blok config per-wallet di user-config.json
+        DASHBOARD_ONLY: "1",
       },
     },
     {
@@ -34,6 +56,7 @@ module.exports = {
       min_uptime: "10s",
       env: {
         NODE_ENV: "production",
+        NODE_OPTIONS: "--dns-result-order=ipv4first",
       },
     },
   ],

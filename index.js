@@ -1,3 +1,4 @@
+const TG_CYCLE_NOTIFS = process.env.TG_CYCLE_NOTIFS === "1"; // notif siklus screening/management ke Telegram — default MATI (hanya deploy/close + balasan user)
 import "./envcrypt.js";
 import cron from "node-cron";
 import readline from "readline";
@@ -125,7 +126,12 @@ let _cronTasks = [];
 let _managementBusy = false; // prevents overlapping management cycles
 let _screeningBusy = false;  // prevents overlapping screening cycles
 let _screeningLastTriggered = 0; // epoch ms — prevents management from spamming screening
-let _pollTriggeredAt = 0; // epoch ms — cooldown for poller-triggered management
+let _pollTriggeredAt = 0;
+/* __CHASEUP__ chase-up OOR-atas */
+import { recordChase, chaseCountInWindow } from "./pool-memory.js";
+import { notifyChase } from "./telegram.js";
+const _chaseOorUpSince = new Map();
+const _chaseDispatched = new Set(); // epoch ms — cooldown for poller-triggered management
 const _peakConfirmTimers = new Map();
 const _trailingDropConfirmTimers = new Map();
 const TRAILING_PEAK_CONFIRM_DELAY_MS = 15_000;
@@ -260,7 +266,7 @@ export async function runManagementCycle({ silent = false } = {}) {
   const screeningCooldownMs = 5 * 60 * 1000;
 
   try {
-    if (!silent && telegramEnabled()) {
+    if (TG_CYCLE_NOTIFS && !silent && telegramEnabled()) {
       liveMessage = await createLiveMessage("🔄 <b>NGECEK POSISI, BOS</b>", "Lagi dievaluasi posisine...");
     }
     const livePositions = await getMyPositions({ force: true }).catch(() => null);
@@ -428,7 +434,7 @@ After executing, write a brief one-line result per position.
   } finally {
     _managementBusy = false;
     drainTelegramQueue().catch(() => {});
-    if (!silent && telegramEnabled()) {
+    if (TG_CYCLE_NOTIFS && !silent && telegramEnabled()) {
       if (mgmtReport) {
         if (liveMessage) await liveMessage.finalize(stripThink(mgmtReport)).catch(() => {});
         else sendMessage(`🔄 <b>LAPORAN POSISI, BOS</b>\n\n${stripThink(mgmtReport)}`).catch(() => { });
@@ -522,7 +528,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     drainTelegramQueue().catch(() => {});
     return screenReport;
   }
-  if (!silent && telegramEnabled()) {
+  if (TG_CYCLE_NOTIFS && !silent && telegramEnabled()) {
     liveMessage = await createLiveMessage("🔍 <b>NYARI POOL, BOS</b>", "Lagi dipindai kandidate...");
   }
   timers.screeningLastRun = Date.now();
@@ -536,7 +542,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     // Load active strategy
     const activeStrategy = getActiveStrategy();
     const strategyBlock = activeStrategy
-      ? `ACTIVE STRATEGY: ${activeStrategy.name} — LP: ${activeStrategy.lp_strategy} | bins_above: ${activeStrategy.range?.bins_above ?? 0} (FIXED — never change) | deposit: ${activeStrategy.entry?.single_side === "sol" ? "SOL only (amount_y, amount_x=0)" : "dual-sided"} | best for: ${activeStrategy.best_for}`
+      ? `ACTIVE STRATEGY: ${activeStrategy.name} — LP: ${activeStrategy.lp_strategy} | bins_above: ${activeStrategy.range?.bins_above ?? 0} (FIXED — never change) | deposit: ${activeStrategy.entry?.single_side === "sol" ? "SOL only (amount_y, amount_x=0)" : "dual-sided"} | best for: ${activeStrategy.best_for}${activeStrategy.lp_strategy === "hybrid" ? `\nSTRATEGY SELECTION RULES (hybrid — pick spot or bid_ask per candidate): ${activeStrategy.entry?.notes ?? ""}` : ""}` /* __HYBRIDSTRAT__ */
       : `No active strategy — use default bid_ask, bins_above: 0, SOL only.`;
 
     // Phase 1: Deterministic pre-screening — score, enrich memory/wallets in parallel, return top 5
@@ -863,7 +869,7 @@ IMPORTANT:
     log("screening", `Screening summary — outcome=${screeningOutcome} prescreened=${prescreenedCount} passing=${passingCount} deployAttempted=${deployAttempted} deploySucceeded=${deploySucceeded} durationMs=${Date.now() - screeningStartedAt}`);
     _screeningBusy = false;
     drainTelegramQueue().catch(() => {});
-    if (!silent && telegramEnabled()) {
+    if (TG_CYCLE_NOTIFS && !silent && telegramEnabled()) {
       if (screenReport) {
         if (liveMessage) await liveMessage.finalize(stripThink(screenReport)).catch(() => {});
         else sendMessage(`🔍 <b>LAPORAN SCREENING, BOS</b>\n\n${stripThink(screenReport)}`).catch(() => { });
@@ -949,6 +955,30 @@ export function startCronJobs() {
         ) {
           schedulePeakConfirmation(p.position);
         }
+        /* __CHASEUP__ deteksi OOR-ATAS → konfirmasi LLM utk chase */
+        try {
+          const mgm = config.management;
+          if (mgm.chaseOorUpEnabled !== false && p.active_bin != null && p.upper_bin != null && p.active_bin > p.upper_bin) {
+            if (!_chaseOorUpSince.has(p.position)) _chaseOorUpSince.set(p.position, Date.now());
+            const aboveMin = (Date.now() - _chaseOorUpSince.get(p.position)) / 60000;
+            const solPure = (p.token_x_value_usd ?? 0) < 25;
+            const chases = chaseCountInWindow(p.pool, mgm.chaseWindowHours ?? 6);
+            const chCd = config.schedule.managementIntervalMin * 60 * 1000;
+            if (aboveMin >= (mgm.chaseOorUpMinutes ?? 5) && solPure && chases < (mgm.maxChasesPerPool ?? 2) && !_chaseDispatched.has(p.position) && Date.now() - _pollTriggeredAt >= chCd) {
+              _pollTriggeredAt = Date.now();
+              _chaseDispatched.add(p.position);
+              recordChase(p.pool);
+              log("state", `[CHASE] ${p.pair} OOR-ATAS ${Math.round(aboveMin)}m, sisa token ~$${(p.token_x_value_usd ?? 0).toFixed?.(2) ?? p.token_x_value_usd}, chase ${chases + 1}/${mgm.maxChasesPerPool ?? 2} — konfirmasi LLM`);
+              notifyChase({ pair: p.pair, minutes: Math.round(aboveMin), chaseNum: chases + 1, maxChase: mgm.maxChasesPerPool ?? 2 }).catch(() => {});
+              const chasePrompt = `CHASE-UP CHECK: Position ${p.position} (${p.pair}) in pool ${p.pool} has been OUT OF RANGE ABOVE for ${Math.round(aboveMin)} minutes — price pumped above our range. The position is ~100% SOL (no impermanent loss). Chase attempt ${chases + 1}/${mgm.maxChasesPerPool ?? 2}. First evaluate momentum with pool/token data. IF momentum is still healthy: (1) close_position with reason \"chase_up\", then (2) deploy_position on the SAME pool ${p.pool} below the new price — follow the ACTIVE STRATEGY (hybrid + RANGE DEPTH RULES; a strong pump usually means bid_ask), single-side SOL (amount_y per config, amount_x=0, bins_above=0). IF momentum is broken or volume dried up: just close_position with a normal reason. Act now, no questions.`;
+              agentLoop(chasePrompt, config.llm.maxSteps, [], "GENERAL")
+                .then((r) => log("state", `[CHASE] selesai: ${String(r?.content || "").slice(0, 160)}`))
+                .catch((e) => log("cron_error", `[CHASE] gagal: ${e.message}`))
+                .finally(() => _chaseDispatched.delete(p.position));
+              break;
+            }
+          } else { _chaseOorUpSince.delete(p.position); }
+        } catch { /* jangan ganggu poller */ }
         const exit = updatePnlAndCheckExits(p.position, p, config.management);
         if (exit) {
           if (exit.action === "TRAILING_TP" && exit.needs_confirmation && shouldUsePnlRecheck()) {

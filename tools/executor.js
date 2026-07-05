@@ -834,9 +834,18 @@ export async function executeTool(name, args) {
       if (name === "swap_token" && result.tx) {
         notifySwap({ inputSymbol: args.input_mint?.slice(0, 8), outputSymbol: args.output_mint === "So11111111111111111111111111111111111111112" || args.output_mint === "SOL" ? "SOL" : args.output_mint?.slice(0, 8), amountIn: result.amount_in, amountOut: result.amount_out, tx: result.tx }).catch(() => {});
       } else if (name === "deploy_position") {
-        notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, rangeCoverage: result.range_coverage, binStep: result.bin_step, baseFee: result.base_fee }).catch(() => {});
+        notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, rangeCoverage: result.range_coverage, binStep: result.bin_step, baseFee: result.base_fee, strategy: args.strategy || result.strategy, strategyReason: args.strategy_reason || "" /* __HYBRIDSTRAT__ */ }).catch(() => {});
       } else if (name === "close_position") {
-        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0 }).catch(() => {});
+        notifyClose({ /* __PNLCARD_CALLSITE__ */
+          pair: result.pool_name || args.position_address?.slice(0, 8),
+          pnlUsd: result.pnl_usd ?? 0,
+          pnlPct: result.pnl_pct ?? 0,
+          result,
+          reason: args.reason || result.close_reason || "", /* __CLOSEREASON__ */
+          walletAddress: (() => { try { return deriveAddress(process.env.WALLET_PRIVATE_KEY || ""); } catch { return null; } })(),
+          brand: process.env.CARD_BRAND || "PureXBT",
+          url: process.env.CARD_URL || "dlmm.purexbt.dev",
+        }).catch(() => {});
         appendDecision({
           type: "close",
           ts: Date.now(),
@@ -1068,6 +1077,16 @@ async function runSafetyChecks(name, args) {
           pass: false,
           reason: `volatility ${args.volatility} is invalid. Refusing deploy because the volatility feed is unusable.`,
         };
+      }
+      /* __DEPTHCLAMP__ paksa downside_pct masuk band strategi (spot 30-40, bid_ask 40-60) */
+      if (args.downside_pct != null && Number.isFinite(Number(args.downside_pct))) {
+        const band = args.strategy === "spot" ? [30, 40] : args.strategy === "bid_ask" ? [40, 60] : [30, 60];
+        const req = Number(args.downside_pct);
+        const clamped = Math.min(band[1], Math.max(band[0], req));
+        if (clamped !== req) {
+          log("safety", `deploy_position: downside_pct ${req} di luar band ${args.strategy || "?"} [${band[0]}-${band[1]}] — di-clamp ke ${clamped}`);
+          args.downside_pct = clamped;
+        }
       }
       if (
         args.downside_pct == null &&

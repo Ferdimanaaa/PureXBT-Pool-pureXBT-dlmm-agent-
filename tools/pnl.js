@@ -1,5 +1,6 @@
 import { Connection, PublicKey } from "@solana/web3.js";
 import { config } from "../config.js";
+import { poolNameFromMemory } from "../pool-memory.js"; /* __POOLNAME_FALLBACK__ */
 import { log } from "../logger.js";
 import {
   getTrackedPosition,
@@ -181,9 +182,13 @@ function buildPosition(f, prices, solUsd, meteora, solMode) {
   const holdsTokenX = xHuman > 0 || feeXHuman > 0;
   const priceMissing = !(solUsd > 0) || (holdsTokenX && !!f.baseMint && !(priceX > 0));
   const depositsMissing = (solMode ? depositsSol : depositsUsd) <= 0;
-  const pnlPctSuspicious = priceMissing || depositsMissing;
+  // __PNLRENDER__ deposit parsial: Meteora belum indeks semua add-liquidity tx (deploy = 1 create + 2 addliq)
+  const _trkCost = getTrackedPosition(f.position);
+  const _expectSol = Number(_trkCost?.amount_sol) || 0;
+  const depositsIncomplete = _expectSol > 0 && depositsSol > 0 && depositsSol < _expectSol * 0.9;
+  const pnlPctSuspicious = priceMissing || depositsMissing || depositsIncomplete;
   if (pnlPctSuspicious) {
-    log("pnl_warn", `${f.position.slice(0, 8)} suspicious tick — priceMissing=${priceMissing} depositsMissing=${depositsMissing} (solUsd=${solUsd}, priceX=${priceX})`);
+    log("pnl_warn", `${f.position.slice(0, 8)} suspicious tick — priceMissing=${priceMissing} depositsMissing=${depositsMissing} depositsIncomplete=${depositsIncomplete} (solUsd=${solUsd}, priceX=${priceX})`);
   }
 
   const inRange = f.active != null && f.lower != null && f.upper != null
@@ -201,7 +206,7 @@ function buildPosition(f, prices, solUsd, meteora, solMode) {
   return {
     position:           f.position,
     pool:               f.pool,
-    pair:               tracked?.pool_name || (meteora ? `${meteora.tokenX ?? "?"}/${meteora.tokenY ?? "SOL"}` : "?/SOL"),
+    pair:               tracked?.pool_name || poolNameFromMemory(f.pool) || (meteora ? `${meteora.tokenX ?? "?"}/${meteora.tokenY ?? "SOL"}` : "?/SOL"),
     base_mint:          f.baseMint,
     lower_bin:          f.lower ?? tracked?.bin_range?.min ?? null,
     upper_bin:          f.upper ?? tracked?.bin_range?.max ?? null,
@@ -223,6 +228,7 @@ function buildPosition(f, prices, solUsd, meteora, solMode) {
     fee_per_tvl_24h:    meteora ? Math.round(safeNum(meteora.feePerTvl24h) * 100) / 100 : null,
     age_minutes:        ageMinutes,
     minutes_out_of_range: minutesOutOfRange(f.position),
+    token_x_value_usd:  round(xHuman * priceX), /* __CHASEUP__ */
     instruction:        tracked?.instruction ?? null,
   };
 }

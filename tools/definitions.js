@@ -133,15 +133,16 @@ PRIORITY ORDER for strategy and bins:
 
 HARD RULES:
 - Never use 'curve'.
-- Bin Step: Only deploy in pools with bin_step between 80 and 125.
+- Bin Step: Only deploy in pools with bin_step within the configured band (currently 35-125).
 - Volatility must be positive. If volatility is 0, null, or missing, do not deploy.
 - Range must cover at least 35 total bins. Never deploy 1-bin/tiny ranges.
 - For single-side SOL deploys (amount_y only, amount_x=0), do not request upside exposure:
   use bins_below only, keep bins_above=0, and the upper bin will be pinned to the current active bin.
 
 Guidelines (only when user hasn't specified):
-- Strategy: use the active strategy's lp_strategy field (bid_ask or spot)
-- Bins: choose from configured minBinsBelow/maxBinsBelow by positive volatility. The hard lower floor is 35 bins.
+- Strategy: use the active strategy's lp_strategy field (bid_ask or spot). If it is 'hybrid', choose spot or bid_ask PER CANDIDATE following the STRATEGY SELECTION RULES in the ACTIVE STRATEGY block, and always set strategy_reason.
+- Depth: express the range as downside_pct (30-60) following the RANGE DEPTH RULES in the ACTIVE STRATEGY block; never below 30; bins_above stays 0. The hard 35-bin floor still applies — a deploy under it is refused, retry with a deeper pct.
+- BIN STEP GUIDANCE (pool property, affects viable depth): bin_step 35-42 = fine-grained pools -> SPOT ONLY with depth 30-34 (the 120-bin cap makes deeper/bid_ask infeasible). bin_step 43-79 = calmer/mature pools -> prefer spot depth 30-40; bid_ask feasible but capped (~45% at bs50). bin_step 80-125 = standard memecoin -> normal rules (110-125 needs >=37%). Higher bin_step = more fee per swap crossing but coarser ladder.
 - Deposit: single-sided SOL only: set amount_y/amount_sol, keep amount_x=0.
 
 WARNING: This executes a real on-chain transaction. Check DRY_RUN mode.`,
@@ -167,7 +168,11 @@ WARNING: This executes a real on-chain transaction. Check DRY_RUN mode.`,
           strategy: {
             type: "string",
             enum: ["bid_ask", "spot"],
-            description: "DLMM strategy type. If user specifies, use exactly what they said. Otherwise use the active strategy's lp_strategy field."
+            description: "DLMM strategy type. If user specifies, use exactly what they said. Otherwise use the active strategy's lp_strategy field. If the active strategy is 'hybrid', pick spot or bid_ask per candidate per the STRATEGY SELECTION RULES and set strategy_reason."
+          },
+          strategy_reason: { /* __HYBRIDSTRAT__ */
+            type: "string",
+            description: "One short sentence: why this strategy (spot/bid_ask) fits this candidate. Always provide it when the active strategy is hybrid."
           },
           bins_below: {
             type: "number",
@@ -271,6 +276,7 @@ WARNING: This executes a real on-chain transaction.`,
       description: `Remove all liquidity and close a position.
 This withdraws all tokens back to the wallet and closes the position account.
 Use when:
+- Chasing a pump: the position is OUT OF RANGE ABOVE and pure SOL -> close with reason "chase_up" (no pool cooldown is applied), then immediately deploy_position the SAME pool below the new price.
 - Position has been out of range for > 30 minutes
 - IL exceeds accumulated fees
 - Token shows danger signals (organic score drop, volume crash)

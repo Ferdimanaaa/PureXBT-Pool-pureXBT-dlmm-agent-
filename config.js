@@ -147,6 +147,10 @@ export const config = {
     autoSwapAfterClaim:    management.autoSwapAfterClaim    ?? true,
     outOfRangeBinsToClose: management.outOfRangeBinsToClose ?? null,
     outOfRangeWaitMinutes: management.outOfRangeWaitMinutes ?? 30,
+    chaseOorUpEnabled:  management.chaseOorUpEnabled  ?? true,  /* __CHASEUP__ */
+    chaseOorUpMinutes:  management.chaseOorUpMinutes  ?? 5,
+    maxChasesPerPool:   management.maxChasesPerPool   ?? 2,
+    chaseWindowHours:   management.chaseWindowHours   ?? 6,
     oorCooldownTriggerCount: management.oorCooldownTriggerCount ?? 3,
     oorCooldownHours:       management.oorCooldownHours       ?? 12,
     repeatDeployCooldownEnabled: management.repeatDeployCooldownEnabled ?? true,
@@ -323,3 +327,36 @@ export function reloadScreeningThresholds() {
     );
   } catch { /* ignore */ }
 }
+
+/* __CFG_HOTRELOAD__ — hot-reload user-config.json (mtime check tiap 15s). */
+/* Dashboard save langsung aktif tanpa restart. Catatan: interval timer cron */
+/* (schedule) & env WALLET_ID tetap butuh restart; key yang DIHAPUS dari file */
+/* tidak balik ke default sampai restart. */
+let _hotReloadMtimeMs = 0;
+try { _hotReloadMtimeMs = fs.statSync(USER_CONFIG_PATH).mtimeMs; } catch { /* ignore */ }
+export function reloadUserConfigIfChanged() {
+  try {
+    const st = fs.statSync(USER_CONFIG_PATH);
+    if (st.mtimeMs === _hotReloadMtimeMs) return false;
+    const freshU = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+    _hotReloadMtimeMs = st.mtimeMs;
+    u = freshU; // getSection() tanpa arg baca module-level u
+    for (const name of ["risk", "management", "schedule", "llm"]) {
+      const fresh = getSection(name, freshU);
+      const target = config[name];
+      if (!target) continue;
+      for (const [key, val] of Object.entries(fresh)) {
+        if (val !== undefined) target[key] = val;
+      }
+    }
+    reloadScreeningThresholds();
+    console.log(`[config] Hot-reloaded user-config.json (mtime ${new Date(st.mtimeMs).toISOString()})`);
+    return true;
+  } catch (e) {
+    // File mungkin sedang ditulis dashboard (JSON parsial) — biarkan, coba lagi tick berikutnya
+    console.log(`[config] Hot-reload skipped: ${e.message}`);
+    return false;
+  }
+}
+const _hotReloadTimer = setInterval(reloadUserConfigIfChanged, 15_000);
+if (_hotReloadTimer.unref) _hotReloadTimer.unref();

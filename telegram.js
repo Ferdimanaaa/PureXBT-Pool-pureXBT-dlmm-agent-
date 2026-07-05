@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
+import { sendPnlCard } from "./notify-card.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -410,7 +411,7 @@ export function stopPolling() {
 }
 
 // ─── Notification helpers ────────────────────────────────────────
-export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, rangeCoverage, binStep, baseFee }) {
+export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, rangeCoverage, binStep, baseFee, strategy, strategyReason }) { /* __HYBRIDSTRAT__ */
   if (hasActiveLiveMessage()) return;
   const priceStr = priceRange
     ? `Price range: ${priceRange.min < 0.0001 ? priceRange.min.toExponential(3) : priceRange.min.toFixed(6)} – ${priceRange.max < 0.0001 ? priceRange.max.toExponential(3) : priceRange.max.toFixed(6)}\n`
@@ -424,6 +425,7 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
   const _dHead = `┏━━ 🚀 <b>WIS DI-DEPLOY, BOS</b> ━━┓\n`;
   const _dPool = `┃ Pool: ${pair}\n`;
   const _dAmt = `┃ Modal: ${amountSol} SOL\n`;
+  const _dStrat = strategy ? `┃ Strategi: ${strategy}${strategyReason ? " — " + String(strategyReason).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").slice(0, 140) : ""}\n` : "";
   const _dPrice = priceStr ? `┃ ${priceStr}` : "";
   const _dCov = coverageStr ? `┃ ${coverageStr}` : "";
   const _dPoolInfo = poolStr ? `┃ ${poolStr}` : "";
@@ -431,12 +433,29 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
   const _dTx = `┃ Tx: <code>${tx?.slice(0, 16)}...</code>\n`;
   const _dFoot = `┗━━ 🐶 Wis mlebu liquidity, Tuanku. ━━┛`;
   await sendHTML(
-    _dHead + _dPool + _dAmt + _dPrice + _dCov + _dPoolInfo + _dPos + _dTx + _dFoot
+    _dHead + _dPool + _dAmt + _dStrat + _dPrice + _dCov + _dPoolInfo + _dPos + _dTx + _dFoot
   );
 }
 
-export async function notifyClose({ pair, pnlUsd, pnlPct }) {
+export async function notifyClose({ pair, pnlUsd, pnlPct, result, tracked, walletAddress, solPrice, brand, url, reason } = {}) { /* __CLOSEREASON__ */
   if (hasActiveLiveMessage()) return;
+
+  // Try the rich PnL card first (Metlex-style chart or Fabriq-style fallback).
+  // If anything fails, fall back to the classic text box below.
+  try {
+    if (TOKEN && chatId && (result || pair)) {
+      const ok = await sendPnlCard({
+        result: result || { pool_name: pair, pnl_usd: pnlUsd, pnl_pct: pnlPct },
+        tracked: tracked || {},
+        brand, url, walletAddress, solPrice, reason,
+        chatId, token: TOKEN,
+      });
+      if (ok) return;
+    }
+  } catch (e) {
+    log("telegram_warn", `notifyClose card failed, using text: ${e.message}`);
+  }
+
   const sign = pnlUsd >= 0 ? "+" : "";
   const _cMood = (pnlUsd ?? 0) >= 0 ? "🟢 bathi" : "🔴 buntung";
   await sendHTML(
@@ -444,6 +463,7 @@ export async function notifyClose({ pair, pnlUsd, pnlPct }) {
     `┃ Pool: ${pair}\n` +
     `┃ PnL: ${sign}$${(pnlUsd ?? 0).toFixed(2)} (${sign}${(pnlPct ?? 0).toFixed(2)}%)\n` +
     `┃ Asil: ${_cMood}\n` +
+    (reason ? `┃ Alasan: ${String(reason).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").slice(0, 160)}\n` : "") +
     `┗━━ 🐶 Wis ditutup, Tuanku. ━━┛`
   );
 }
@@ -457,6 +477,19 @@ export async function notifySwap({ inputSymbol, outputSymbol, amountIn, amountOu
     `┃ Tx: <code>${tx?.slice(0, 16)}...</code>\n` +
     `┗━━ 🐶 Wis dituker, Tuanku. ━━┛`
   );
+}
+
+/* __CHASENOTIF__ notif khusus reshape/chase-up */
+export async function notifyChase({ pair, minutes, chaseNum, maxChase }) {
+  await sendHTML(
+    `┏━━ 🏃 <b>RESHAPE (CHASE-UP), BOS</b> ━━┓\n` +
+    `┃ Pool: ${pair}\n` +
+    `┃ Harga PUMP keluar range atas ${minutes} menit\n` +
+    `┃ Posisi ~100% SOL (tanpa IL) — aman dikejar\n` +
+    `┃ Chase ke-${chaseNum}/${maxChase}\n` +
+    `┃ Agent lagi nilai momentum → CHASE (redeploy) / batal (close biasa)\n` +
+    `┗━━ 🐶 Ngoyak sing menang, Tuanku. ━━┛`
+  ).catch(() => {});
 }
 
 export async function notifyOutOfRange({ pair, minutesOOR }) {

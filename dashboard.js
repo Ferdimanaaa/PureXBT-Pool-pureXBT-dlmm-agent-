@@ -345,6 +345,7 @@ async function handleState(req, res) {
       // Meteora PnL API uses different field names than Meteora SDK
       const pnlPct = p.pnl_pct_change ?? p.pnlPctChange ?? p.pnl_pct ?? p.pnlPct ?? (p.pnl?.percentage ?? null);
       const pnlUsd = p.pnl_usd ?? p.pnlUsd ?? p.pnl?.usd ?? null;
+      const pnlSuspicious = p.pnl_pct_suspicious === true; /* __PNLRENDER__ */
       const pnlSol = p.pnl_sol ?? p.pnlSol ?? p.pnl?.sol ?? null;
       const valueUsd = p.value_usd ?? p.total_value ?? p.valueUsd ?? p.totalDeposit ?? null;
       const feesUsd = p.unclaimed_fees_usd ?? p.feesUsd ?? p.fees?.usd ?? null;
@@ -371,9 +372,9 @@ async function handleState(req, res) {
         address: (addr && addr !== "0") ? addr : (Object.entries(tracked).filter(([, v]) => !v.closed)[i]?.[0] || "0"),
         pool: p.pool || p.poolAddress || p.pool_address || null,
         poolName: p.pair || t.pool_name || null,
-        pnlPct: typeof pnlPct === "number" ? parseFloat(pnlPct.toFixed(2)) : null,
+        pnlPct: (pnlSuspicious || typeof pnlPct !== "number") ? null : parseFloat(pnlPct.toFixed(2)),
         pnlSol: typeof pnlSol === "number" ? parseFloat(pnlSol.toFixed(4)) : null,
-        pnlUsd: typeof pnlUsd === "number" ? parseFloat(pnlUsd.toFixed(2)) : null,
+        pnlUsd: (pnlSuspicious || typeof pnlUsd !== "number") ? null : parseFloat(pnlUsd.toFixed(2)),
         valueUsd: typeof valueUsd === "number" ? parseFloat(valueUsd.toFixed(2)) : null,
         feesUsd: typeof feesUsd === "number" ? parseFloat(feesUsd.toFixed(2)) : null,
         feesSol: (() => {
