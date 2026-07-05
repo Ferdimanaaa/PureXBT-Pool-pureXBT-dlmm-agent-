@@ -494,7 +494,8 @@ export async function notifyChase({ pair, minutes, chaseNum, maxChase }) {
 
 /* __CHASERESULT__ notif hasil reshape */
 export async function notifyChaseResult({ pair, ok, detail }) {
-  const escC = (s) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  /* __NOTIFCLEAN__ strip markdown + rapikan jadi satu alur kalimat */
+  const escC = (s) => String(s || "").replace(/[*_`#]+/g, "").replace(/\s*\n+\s*/g, " — ").replace(/\s{2,}/g, " ").trim().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   await sendHTML(
     ok
       ? `┏━━ ✅ <b>RESHAPE BERHASIL, BOS</b> ━━┓\n` +

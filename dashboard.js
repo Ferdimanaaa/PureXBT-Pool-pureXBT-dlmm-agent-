@@ -1864,7 +1864,17 @@ async function handlePostWalletConfig(req, res) {
     if (Object.keys(body.config).length === 0) {
       delete userConfig.wallets[wallet.address];
     } else {
-      userConfig.wallets[wallet.address] = body.config;
+      /* __WALLETCFGMERGE__ deep-merge: form UI cuma tahu field standar — jangan hapus custom key (minBinStep, chase, poolCooldown, dll) */
+      const prevBlock = userConfig.wallets[wallet.address] || {};
+      const mergedBlock = { ...prevBlock };
+      for (const [sec, val] of Object.entries(body.config)) {
+        if (val && typeof val === "object" && !Array.isArray(val) && prevBlock[sec] && typeof prevBlock[sec] === "object" && !Array.isArray(prevBlock[sec])) {
+          mergedBlock[sec] = { ...prevBlock[sec], ...val };
+        } else {
+          mergedBlock[sec] = val;
+        }
+      }
+      userConfig.wallets[wallet.address] = mergedBlock;
     }
     fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userConfig, null, 2));
   } catch (err) {
